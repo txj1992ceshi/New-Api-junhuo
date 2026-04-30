@@ -10,6 +10,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	appconstant "github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -19,6 +20,41 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func executeResponsesAttempt(c *gin.Context, info *relaycommon.RelayInfo, adaptor channel.Adaptor, requestBody []byte, statusCodeMappingStr string) *service.CodexAttemptResult {
+	resp, err := adaptor.DoRequest(c, info, bytes.NewBuffer(requestBody))
+	if err != nil {
+		return &service.CodexAttemptResult{
+			Error: types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError),
+		}
+	}
+
+	var httpResp *http.Response
+	if resp != nil {
+		httpResp = resp.(*http.Response)
+		if httpResp.StatusCode != http.StatusOK {
+			newAPIError := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
+			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
+			return &service.CodexAttemptResult{
+				Response: httpResp,
+				Error:    newAPIError,
+			}
+		}
+	}
+
+	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
+	if newAPIError != nil {
+		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
+		return &service.CodexAttemptResult{
+			Response: httpResp,
+			Error:    newAPIError,
+		}
+	}
+	return &service.CodexAttemptResult{
+		Response: httpResp,
+		Usage:    usage,
+	}
+}
 
 func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types.NewAPIError) {
 	info.InitChannelMeta(c)
@@ -70,13 +106,16 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		return types.NewError(fmt.Errorf("invalid api type: %d", info.ApiType), types.ErrorCodeInvalidApiType, types.ErrOptionWithSkipRetry())
 	}
 	adaptor.Init(info)
-	var requestBody io.Reader
+	var requestBody []byte
 	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || info.ChannelSetting.PassThroughBodyEnabled {
 		storage, err := common.GetBodyStorage(c)
 		if err != nil {
 			return types.NewError(err, types.ErrorCodeReadRequestBodyFailed, types.ErrOptionWithSkipRetry())
 		}
-		requestBody = common.ReaderOnly(storage)
+		requestBody, err = io.ReadAll(common.ReaderOnly(storage))
+		if err != nil {
+			return types.NewError(err, types.ErrorCodeReadRequestBodyFailed, types.ErrOptionWithSkipRetry())
+		}
 	} else {
 		convertedRequest, err := adaptor.ConvertOpenAIResponsesRequest(c, info, *request)
 		if err != nil {
@@ -105,36 +144,28 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 		if common.DebugEnabled {
 			println("requestBody: ", string(jsonData))
 		}
-		requestBody = bytes.NewBuffer(jsonData)
-	}
-
-	var httpResp *http.Response
-	resp, err := adaptor.DoRequest(c, info, requestBody)
-	if err != nil {
-		return types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
+		requestBody = jsonData
 	}
 
 	statusCodeMappingStr := c.GetString("status_code_mapping")
-
-	if resp != nil {
-		httpResp = resp.(*http.Response)
-
-		if httpResp.StatusCode != http.StatusOK {
-			newAPIError = service.RelayErrorHandler(c.Request.Context(), httpResp, false)
-			// reset status code 重置状态码
-			service.ResetStatusCode(newAPIError, statusCodeMappingStr)
-			return newAPIError
-		}
+	result := service.ExecuteCodexWithRetries(c, info, func(c *gin.Context, info *relaycommon.RelayInfo) *service.CodexAttemptResult {
+		return executeResponsesAttempt(c, info, adaptor, requestBody, statusCodeMappingStr)
+	}, service.CodexRetryLimits{
+		MaxAttempts:    3,
+		Max429Retries:  2,
+		Max5xxRetries:  2,
+		MaxSoftRetries: 1,
+	})
+	if result == nil {
+		return types.NewErrorWithStatusCode(fmt.Errorf("empty codex result"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
-
-	usage, newAPIError := adaptor.DoResponse(c, httpResp, info)
-	if newAPIError != nil {
-		// reset status code 重置状态码
-		service.ResetStatusCode(newAPIError, statusCodeMappingStr)
-		return newAPIError
+	if result.Error != nil {
+		return result.Error
 	}
-
-	usageDto := usage.(*dto.Usage)
+	usageDto, ok := result.Usage.(*dto.Usage)
+	if !ok || usageDto == nil {
+		return types.NewErrorWithStatusCode(fmt.Errorf("invalid usage result %T", result.Usage), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
+	}
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
 		originModelName := info.OriginModelName
 		originPriceData := info.PriceData

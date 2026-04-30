@@ -27,6 +27,7 @@ import {
   Tag,
   Descriptions,
   Collapse,
+  Space,
 } from '@douyinfe/semi-ui';
 import { API, showError } from '../../../../helpers';
 
@@ -98,10 +99,12 @@ const resolveRateLimitWindows = (data) => {
   }
 
   if (!fiveHourWindow) {
-    fiveHourWindow = windows.find((windowData) => windowData !== weeklyWindow) ?? null;
+    fiveHourWindow =
+      windows.find((windowData) => windowData !== weeklyWindow) ?? null;
   }
   if (!weeklyWindow) {
-    weeklyWindow = windows.find((windowData) => windowData !== fiveHourWindow) ?? null;
+    weeklyWindow =
+      windows.find((windowData) => windowData !== fiveHourWindow) ?? null;
   }
 
   return { fiveHourWindow, weeklyWindow };
@@ -133,6 +136,70 @@ const formatUnixSeconds = (unixSeconds) => {
 const getDisplayText = (value) => {
   if (value == null) return '';
   return String(value).trim();
+};
+
+const formatNumber = (value) => {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '-';
+  return String(num);
+};
+
+const formatPercentText = (value) => {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '-';
+  return `${(num * 100).toFixed(0)}%`;
+};
+
+const formatTimeText = (value) => {
+  if (!value) return '-';
+  try {
+    return new Date(value).toLocaleString();
+  } catch (error) {
+    return String(value);
+  }
+};
+
+const STATE_META = {
+  healthy: { color: 'green', label: 'Healthy' },
+  new: { color: 'blue', label: 'New' },
+  cooldown: { color: 'orange', label: 'Cooldown' },
+  suspect: { color: 'amber', label: 'Suspect' },
+  dead: { color: 'red', label: 'Dead' },
+  refreshing: { color: 'cyan', label: 'Refreshing' },
+};
+
+const TRIGGER_REASON_META = {
+  low_watermark: { color: 'orange', label: '低水位' },
+  healthy_ratio_low: { color: 'orange', label: '健康占比过低' },
+  cooldown_ratio_high: { color: 'red', label: 'Cooldown 占比过高' },
+  dead_growth_fast: { color: 'red', label: 'Dead 增长过快' },
+  no_available_tokens: { color: 'red', label: '连续无可用 Token' },
+};
+
+const BLOCK_REASON_META = {
+  circuit_open: { color: 'red', label: '熔断中' },
+  cooldown: { color: 'orange', label: '触发冷却中' },
+  rate_limited: { color: 'red', label: '触发次数过多' },
+  already_running: { color: 'blue', label: '补号任务运行中' },
+};
+
+const getReasonMeta = (code, type) => {
+  const normalized = getDisplayText(code);
+  if (!normalized) return null;
+  const source = type === 'block' ? BLOCK_REASON_META : TRIGGER_REASON_META;
+  const meta = source[normalized];
+  if (meta) {
+    return {
+      code: normalized,
+      label: meta.label,
+      color: meta.color,
+    };
+  }
+  return {
+    code: normalized,
+    label: normalized,
+    color: 'grey',
+  };
 };
 
 const formatAccountTypeLabel = (value, t) => {
@@ -262,7 +329,256 @@ const RateLimitWindowCard = ({ t, title, windowData }) => {
   );
 };
 
-const CodexUsageView = ({ t, record, payload, onCopy, onRefresh }) => {
+const PoolStateGrid = ({ t, stateCounters }) => {
+  const tt = typeof t === 'function' ? t : (v) => v;
+  const entries = Object.entries(STATE_META);
+
+  return (
+    <div className='grid grid-cols-2 gap-2 md:grid-cols-3'>
+      {entries.map(([key, meta]) => (
+        <div
+          key={key}
+          className='rounded-lg border border-semi-color-border bg-semi-color-bg-0 p-3'
+        >
+          <div className='flex items-center justify-between gap-2'>
+            <Text size='small' type='tertiary'>
+              {tt(meta.label)}
+            </Text>
+            <Tag color={meta.color} type='light' shape='circle'>
+              {formatNumber(stateCounters?.[key] ?? 0)}
+            </Tag>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const StatusMetricCard = ({ title, value, hint }) => (
+  <div className='rounded-lg border border-semi-color-border bg-semi-color-bg-0 p-3'>
+    <div className='text-xs text-semi-color-text-2'>{title}</div>
+    <div className='mt-2 text-lg font-semibold text-semi-color-text-0'>
+      {value}
+    </div>
+    {hint ? (
+      <div className='mt-1 text-xs text-semi-color-text-2'>{hint}</div>
+    ) : null}
+  </div>
+);
+
+const ReasonTag = ({ reason, type }) => {
+  const meta = getReasonMeta(reason, type);
+  if (!meta) return null;
+  return (
+    <Tag color={meta.color} type='light'>
+      {meta.label}
+    </Tag>
+  );
+};
+
+const ReasonText = ({ t, label, reason, type }) => {
+  const tt = typeof t === 'function' ? t : (v) => v;
+  const meta = getReasonMeta(reason, type);
+  if (!meta) return null;
+  return (
+    <div className='mt-1 text-xs text-semi-color-text-2'>
+      {tt(label)}: {meta.label}
+      {meta.code !== meta.label ? ` (${meta.code})` : ''}
+    </div>
+  );
+};
+
+const PoolHealthSection = ({ t, poolHealthPayload }) => {
+  const tt = typeof t === 'function' ? t : (v) => v;
+  const data = poolHealthPayload?.data ?? null;
+  const health = data?.health ?? {};
+
+  if (!poolHealthPayload) return null;
+
+  return (
+    <div className='flex flex-col gap-3'>
+      <div className='flex flex-wrap items-start justify-between gap-2'>
+        <div>
+          <div className='text-sm font-semibold text-semi-color-text-0'>
+            {tt('Pool Health')}
+          </div>
+          <Text type='tertiary' size='small'>
+            {tt('观察当前 token 池可用度、退避状态和补号建议')}
+          </Text>
+        </div>
+        <Space wrap spacing='tight'>
+          <Tag
+            color={data?.auto_import_enabled ? 'green' : 'grey'}
+            type='light'
+          >
+            {tt('自动导入')}:{' '}
+            {data?.auto_import_enabled ? tt('开启') : tt('关闭')}
+          </Tag>
+          <Tag
+            color={data?.trigger_recommended ? 'orange' : 'green'}
+            type='light'
+          >
+            {tt('补号建议')}:{' '}
+            {data?.trigger_recommended ? tt('建议触发') : tt('暂不需要')}
+          </Tag>
+          <ReasonTag reason={data?.trigger_reason} type='trigger' />
+        </Space>
+      </div>
+
+      <div className='grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4'>
+        <StatusMetricCard
+          title={tt('可用 Key')}
+          value={formatNumber(health?.available_count)}
+          hint={`${tt('总数')}: ${formatNumber(health?.total)}`}
+        />
+        <StatusMetricCard
+          title={tt('健康占比')}
+          value={formatPercentText(health?.healthy_ratio)}
+          hint={`${tt('最低水位')}: ${formatNumber(data?.min_healthy_watermark)}`}
+        />
+        <StatusMetricCard
+          title={tt('Cooldown 占比')}
+          value={formatPercentText(health?.cooldown_ratio)}
+          hint={`${tt('5分钟无可用')}: ${formatNumber(data?.recent_no_available_5m)}`}
+        />
+        <StatusMetricCard
+          title={tt('30分钟新增 Dead')}
+          value={formatNumber(health?.recent_dead_30m)}
+          hint={tt('用于观察池子衰减速度')}
+        />
+      </div>
+
+      <PoolStateGrid t={tt} stateCounters={data?.key_state_counters} />
+
+      <div className='rounded-lg bg-semi-color-fill-0 px-3 py-2 text-xs text-semi-color-text-2 break-all'>
+        {tt('CursorPro 导出目录')}: {data?.cursorpro_export_dir || '-'}
+        <ReasonText
+          t={tt}
+          label='建议原因'
+          reason={data?.trigger_reason}
+          type='trigger'
+        />
+      </div>
+    </div>
+  );
+};
+
+const ReplacementStatusSection = ({ t, replacementPayload }) => {
+  const tt = typeof t === 'function' ? t : (v) => v;
+  const data = replacementPayload?.data ?? null;
+
+  if (!replacementPayload) return null;
+
+  return (
+    <div className='flex flex-col gap-3'>
+      <div className='flex flex-wrap items-start justify-between gap-2'>
+        <div>
+          <div className='text-sm font-semibold text-semi-color-text-0'>
+            {tt('Replacement Status')}
+          </div>
+          <Text type='tertiary' size='small'>
+            {tt('观察 CursorPro 补号任务、保护阈值和熔断状态')}
+          </Text>
+        </div>
+        <Space wrap spacing='tight'>
+          <Tag color={data?.trigger_allowed ? 'green' : 'red'} type='light'>
+            {tt('允许触发')}: {data?.trigger_allowed ? tt('是') : tt('否')}
+          </Tag>
+          <ReasonTag reason={data?.block_reason} type='block' />
+          <Tag
+            color={data?.trigger_recommended ? 'orange' : 'grey'}
+            type='light'
+          >
+            {tt('建议补号')}: {data?.trigger_recommended ? tt('是') : tt('否')}
+          </Tag>
+        </Space>
+      </div>
+
+      <div className='grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4'>
+        <StatusMetricCard
+          title={tt('30分钟触发次数')}
+          value={formatNumber(data?.recent_triggers_30m)}
+          hint={`${tt('上限')}: ${formatNumber(data?.max_triggers_per_30m)}`}
+        />
+        <StatusMetricCard
+          title={tt('连续无产出')}
+          value={formatNumber(data?.consecutive_no_yield)}
+          hint={`${tt('熔断阈值')}: ${formatNumber(data?.open_circuit_after_no_yield)}`}
+        />
+        <StatusMetricCard
+          title={tt('最近触发')}
+          value={formatTimeText(data?.last_trigger_at)}
+          hint={`${tt('最小间隔')}: ${formatNumber(data?.min_trigger_interval_sec)}s`}
+        />
+        <StatusMetricCard
+          title={tt('熔断到期')}
+          value={formatTimeText(data?.circuit_open_until)}
+          hint={
+            getReasonMeta(data?.trigger_reason, 'trigger')?.label
+              ? `${tt('推荐原因')}: ${getReasonMeta(data?.trigger_reason, 'trigger')?.label}`
+              : undefined
+          }
+        />
+      </div>
+
+      <div className='rounded-lg border border-semi-color-border bg-semi-color-bg-0 p-3'>
+        <Descriptions>
+          <Descriptions.Item itemKey={tt('控制服务')}>
+            <AccountInfoValue
+              t={tt}
+              value={data?.control_base_url}
+              monospace={true}
+            />
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('任务 ID')}>
+            <AccountInfoValue
+              t={tt}
+              value={data?.last_task_id}
+              monospace={true}
+            />
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('最后结果')}>
+            {getDisplayText(data?.last_result_status) || '-'}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('任务完成时间')}>
+            {formatTimeText(data?.last_task_finished_at)}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('注册器状态')}>
+            {getDisplayText(data?.register_status?.status) || '-'}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('注册器产出')}>
+            {data?.register_status
+              ? `${formatNumber(data.register_status.created_count)} / ${formatNumber(
+                  data.register_status.updated_count,
+                )}`
+              : '-'}
+          </Descriptions.Item>
+        </Descriptions>
+        {data?.register_status_error ? (
+          <div className='mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700'>
+            {tt('读取 CursorPro 状态失败')}: {data.register_status_error}
+          </div>
+        ) : null}
+        <ReasonText
+          t={tt}
+          label='阻塞原因'
+          reason={data?.block_reason}
+          type='block'
+        />
+      </div>
+    </div>
+  );
+};
+
+const CodexUsageView = ({
+  t,
+  record,
+  payload,
+  poolHealthPayload,
+  replacementPayload,
+  onCopy,
+  onRefresh,
+}) => {
   const tt = typeof t === 'function' ? t : (v) => v;
   const [showRawJson, setShowRawJson] = useState(false);
   const data = payload?.data ?? null;
@@ -277,7 +593,9 @@ const CodexUsageView = ({ t, record, payload, onCopy, onRefresh }) => {
   const email = data?.email;
   const accountId = data?.account_id;
   const errorMessage =
-    payload?.success === false ? getDisplayText(payload?.message) || tt('获取用量失败') : '';
+    payload?.success === false
+      ? getDisplayText(payload?.message) || tt('获取用量失败')
+      : '';
 
   const rawText =
     typeof data === 'string' ? data : JSON.stringify(data ?? payload, null, 2);
@@ -313,7 +631,12 @@ const CodexUsageView = ({ t, record, payload, onCopy, onRefresh }) => {
               </Tag>
             </div>
           </div>
-          <Button size='small' type='tertiary' theme='outline' onClick={onRefresh}>
+          <Button
+            size='small'
+            type='tertiary'
+            theme='outline'
+            onClick={onRefresh}
+          >
             {tt('刷新')}
           </Button>
         </div>
@@ -373,6 +696,12 @@ const CodexUsageView = ({ t, record, payload, onCopy, onRefresh }) => {
         />
       </div>
 
+      <PoolHealthSection t={tt} poolHealthPayload={poolHealthPayload} />
+      <ReplacementStatusSection
+        t={tt}
+        replacementPayload={replacementPayload}
+      />
+
       <Collapse
         activeKey={showRawJson ? ['raw-json'] : []}
         onChange={(activeKey) => {
@@ -405,6 +734,8 @@ const CodexUsageLoader = ({ t, record, initialPayload, onCopy }) => {
   const tt = typeof t === 'function' ? t : (v) => v;
   const [loading, setLoading] = useState(!initialPayload);
   const [payload, setPayload] = useState(initialPayload ?? null);
+  const [poolHealthPayload, setPoolHealthPayload] = useState(null);
+  const [replacementPayload, setReplacementPayload] = useState(null);
   const hasShownErrorRef = useRef(false);
   const mountedRef = useRef(true);
   const recordId = record?.id;
@@ -417,12 +748,41 @@ const CodexUsageLoader = ({ t, record, initialPayload, onCopy }) => {
 
     if (mountedRef.current) setLoading(true);
     try {
-      const res = await API.get(`/api/channel/${recordId}/codex/usage`, {
-        skipErrorHandler: true,
-      });
+      const [usageRes, poolHealthRes, replacementRes] =
+        await Promise.allSettled([
+          API.get(`/api/channel/${recordId}/codex/usage`, {
+            skipErrorHandler: true,
+          }),
+          API.get(`/api/channel/${recordId}/codex/pool_health`, {
+            skipErrorHandler: true,
+          }),
+          API.get(`/api/channel/${recordId}/codex/replacement_status`, {
+            skipErrorHandler: true,
+          }),
+        ]);
       if (!mountedRef.current) return;
-      setPayload(res?.data ?? null);
-      if (!res?.data?.success && !hasShownErrorRef.current) {
+      const usageData =
+        usageRes.status === 'fulfilled' ? (usageRes.value?.data ?? null) : null;
+      const poolData =
+        poolHealthRes.status === 'fulfilled'
+          ? (poolHealthRes.value?.data ?? null)
+          : {
+              success: false,
+              message: String(poolHealthRes.reason || ''),
+            };
+      const replacementData =
+        replacementRes.status === 'fulfilled'
+          ? (replacementRes.value?.data ?? null)
+          : {
+              success: false,
+              message: String(replacementRes.reason || ''),
+            };
+
+      setPayload(usageData);
+      setPoolHealthPayload(poolData);
+      setReplacementPayload(replacementData);
+
+      if (!usageData?.success && !hasShownErrorRef.current) {
         hasShownErrorRef.current = true;
         showError(tt('获取用量失败'));
       }
@@ -481,6 +841,8 @@ const CodexUsageLoader = ({ t, record, initialPayload, onCopy }) => {
       t={tt}
       record={record}
       payload={payload}
+      poolHealthPayload={poolHealthPayload}
+      replacementPayload={replacementPayload}
       onCopy={onCopy}
       onRefresh={fetchUsage}
     />

@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -58,13 +59,14 @@ type Channel struct {
 }
 
 type ChannelInfo struct {
-	IsMultiKey             bool                  `json:"is_multi_key"`                        // 是否多Key模式
-	MultiKeySize           int                   `json:"multi_key_size"`                      // 多Key模式下的Key数量
-	MultiKeyStatusList     map[int]int           `json:"multi_key_status_list"`               // key状态列表，key index -> status
-	MultiKeyDisabledReason map[int]string        `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
-	MultiKeyDisabledTime   map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
-	MultiKeyPollingIndex   int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
-	MultiKeyMode           constant.MultiKeyMode `json:"multi_key_mode"`
+	IsMultiKey             bool                   `json:"is_multi_key"`                        // 是否多Key模式
+	MultiKeySize           int                    `json:"multi_key_size"`                      // 多Key模式下的Key数量
+	MultiKeyStatusList     map[int]int            `json:"multi_key_status_list"`               // key状态列表，key index -> status
+	MultiKeyMeta           map[int]ChannelKeyMeta `json:"multi_key_meta,omitempty"`            // key运行时状态元数据
+	MultiKeyDisabledReason map[int]string         `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
+	MultiKeyDisabledTime   map[int]int64          `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
+	MultiKeyPollingIndex   int                    `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
+	MultiKeyMode           constant.MultiKeyMode  `json:"multi_key_mode"`
 }
 
 // Value implements driver.Valuer interface
@@ -106,6 +108,10 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 	// If not in multi-key mode, return the original key string directly.
 	if !channel.ChannelInfo.IsMultiKey {
 		return channel.Key, 0, nil
+	}
+	if channel.Type == constant.ChannelTypeCodex {
+		key, index, _, err := channel.GetNextAvailableCodexKey(nil, time.Now())
+		return key, index, err
 	}
 
 	// Obtain all keys (split by \n)
@@ -187,6 +193,130 @@ func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 		// Unknown mode, default to first enabled key (or original key string)
 		return keys[enabledIdx[0]], enabledIdx[0], nil
 	}
+}
+
+func (channel *Channel) EnsureMultiKeyMeta() {
+	if channel.ChannelInfo.MultiKeyMeta == nil {
+		channel.ChannelInfo.MultiKeyMeta = make(map[int]ChannelKeyMeta)
+	}
+}
+
+func (channel *Channel) GetKeyMeta(index int) ChannelKeyMeta {
+	if channel.ChannelInfo.MultiKeyMeta == nil {
+		return ChannelKeyMeta{}
+	}
+	return channel.ChannelInfo.MultiKeyMeta[index]
+}
+
+func (channel *Channel) SetKeyMeta(index int, meta ChannelKeyMeta) {
+	channel.EnsureMultiKeyMeta()
+	channel.ChannelInfo.MultiKeyMeta[index] = meta
+}
+
+func normalizeCodexKeyMeta(meta ChannelKeyMeta) ChannelKeyMeta {
+	if meta.State == "" {
+		meta.State = CodexKeyStateNew
+	}
+	return meta
+}
+
+func codexKeyWeight(meta ChannelKeyMeta, now time.Time) int {
+	meta = normalizeCodexKeyMeta(meta)
+	switch meta.State {
+	case CodexKeyStateHealthy:
+		return 100
+	case CodexKeyStateNew:
+		return 60
+	case CodexKeyStateSuspect:
+		return 20
+	case CodexKeyStateCooldown:
+		if meta.CooldownUntil > 0 && meta.CooldownUntil > now.Unix() {
+			return 0
+		}
+		return 80
+	default:
+		return 0
+	}
+}
+
+func (channel *Channel) GetNextAvailableCodexKey(excluded map[int]bool, now time.Time) (string, int, *ChannelKeyMeta, *types.NewAPIError) {
+	keys := channel.GetKeys()
+	if len(keys) == 0 {
+		return "", 0, nil, types.NewError(errors.New("no keys available"), types.ErrorCodeChannelNoAvailableKey)
+	}
+
+	lock := GetChannelPollingLock(channel.Id)
+	lock.Lock()
+	defer lock.Unlock()
+
+	channel.EnsureMultiKeyMeta()
+
+	type candidate struct {
+		index  int
+		key    string
+		meta   ChannelKeyMeta
+		weight int
+	}
+
+	candidates := make([]candidate, 0, len(keys))
+	for i, key := range keys {
+		if excluded != nil && excluded[i] {
+			continue
+		}
+		if channel.ChannelInfo.MultiKeyStatusList != nil {
+			if status, ok := channel.ChannelInfo.MultiKeyStatusList[i]; ok && status != common.ChannelStatusEnabled {
+				continue
+			}
+		}
+		meta := normalizeCodexKeyMeta(channel.GetKeyMeta(i))
+		switch meta.State {
+		case CodexKeyStateDead, CodexKeyStateRefreshing:
+			continue
+		}
+		weight := codexKeyWeight(meta, now)
+		if weight <= 0 {
+			continue
+		}
+		// Give recently successful keys a gentle preference while still allowing rotation.
+		if meta.LastSuccessAt > 0 && now.Unix()-meta.LastSuccessAt <= 900 {
+			weight += 15
+		}
+		if meta.LastSelectedAt > 0 && now.Unix()-meta.LastSelectedAt >= 600 {
+			weight += 10
+		}
+		candidates = append(candidates, candidate{
+			index:  i,
+			key:    key,
+			meta:   meta,
+			weight: weight,
+		})
+	}
+
+	if len(candidates) == 0 {
+		return "", 0, nil, types.NewError(errors.New("no available codex keys"), types.ErrorCodeChannelNoAvailableKey)
+	}
+
+	totalWeight := 0
+	for _, candidate := range candidates {
+		totalWeight += candidate.weight
+	}
+	selected := candidates[0]
+	if totalWeight > 0 {
+		randomWeight := rand.Intn(totalWeight)
+		for _, candidate := range candidates {
+			randomWeight -= candidate.weight
+			if randomWeight < 0 {
+				selected = candidate
+				break
+			}
+		}
+	}
+
+	selected.meta.LastSelectedAt = now.Unix()
+	channel.SetKeyMeta(selected.index, selected.meta)
+	channel.ChannelInfo.MultiKeyPollingIndex = (selected.index + 1) % len(keys)
+	meta := selected.meta
+	return selected.key, selected.index, &meta, nil
 }
 
 func (channel *Channel) SaveChannelInfo() error {

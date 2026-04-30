@@ -381,6 +381,21 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	// c.Request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", key))
 	common.SetContextKey(c, constant.ContextKeyChannelKey, key)
 	common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, channel.GetBaseURL())
+	if channel.Type == constant.ChannelTypeCodex {
+		type codexOAuthKeyLite struct {
+			AccountID string `json:"account_id,omitempty"`
+			Email     string `json:"email,omitempty"`
+		}
+		var oauthKey codexOAuthKeyLite
+		if strings.HasPrefix(strings.TrimSpace(key), "{") && common.Unmarshal([]byte(key), &oauthKey) == nil {
+			common.SetContextKey(c, constant.ContextKeyCodexAccountID, oauthKey.AccountID)
+			common.SetContextKey(c, constant.ContextKeyCodexEmail, oauthKey.Email)
+		}
+		if channel.ChannelInfo.MultiKeyMeta != nil {
+			meta := channel.ChannelInfo.MultiKeyMeta[index]
+			common.SetContextKey(c, constant.ContextKeyCodexKeyState, string(meta.State))
+		}
+	}
 
 	common.SetContextKey(c, constant.ContextKeySystemPromptOverride, false)
 

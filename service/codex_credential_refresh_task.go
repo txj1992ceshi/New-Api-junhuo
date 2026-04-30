@@ -85,6 +85,7 @@ func runCodexCredentialAutoRefreshOnce() {
 			}
 			scanned++
 			if ch.ChannelInfo.IsMultiKey {
+				refreshed += refreshMultiKeyCodexChannel(ctx, ch, now)
 				continue
 			}
 
@@ -137,4 +138,50 @@ func runCodexCredentialAutoRefreshOnce() {
 	if common.DebugEnabled {
 		logger.LogDebug(ctx, "codex credential auto-refresh: scanned=%d refreshed=%d", scanned, refreshed)
 	}
+}
+
+func refreshMultiKeyCodexChannel(ctx context.Context, ch *model.Channel, now time.Time) int {
+	keys := ch.GetKeys()
+	refreshed := 0
+	for idx, rawKey := range keys {
+		if strings.TrimSpace(rawKey) == "" {
+			continue
+		}
+
+		meta := ch.GetKeyMeta(idx)
+		oauthKey, err := parseCodexOAuthKey(rawKey)
+		if err != nil {
+			continue
+		}
+		if strings.TrimSpace(oauthKey.RefreshToken) == "" {
+			continue
+		}
+
+		shouldRefresh := meta.State == model.CodexKeyStateRefreshing
+		if !shouldRefresh {
+			expiredAtRaw := strings.TrimSpace(oauthKey.Expired)
+			expiredAt, err := time.Parse(time.RFC3339, expiredAtRaw)
+			if err == nil && !expiredAt.IsZero() && expiredAt.Sub(now) <= codexCredentialRefreshThreshold {
+				shouldRefresh = true
+			}
+		}
+		if !shouldRefresh {
+			continue
+		}
+
+		refreshCtx, cancel := context.WithTimeout(ctx, codexCredentialRefreshTimeout)
+		newKey, _, err := RefreshCodexChannelKeyCredential(refreshCtx, ch.Id, idx, false)
+		cancel()
+		if err != nil {
+			if meta.State == model.CodexKeyStateRefreshing {
+				_ = markCodexKeyDead(ch.Id, idx, "refresh_failed")
+			}
+			logger.LogWarn(ctx, fmt.Sprintf("codex credential auto-refresh: channel_id=%d name=%s key_index=%d refresh failed: %v", ch.Id, ch.Name, idx, err))
+			continue
+		}
+
+		refreshed++
+		logger.LogInfo(ctx, fmt.Sprintf("codex credential auto-refresh: channel_id=%d name=%s key_index=%d refreshed, expires_at=%s", ch.Id, ch.Name, idx, newKey.Expired))
+	}
+	return refreshed
 }

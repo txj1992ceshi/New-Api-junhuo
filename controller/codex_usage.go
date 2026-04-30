@@ -124,3 +124,81 @@ func GetCodexChannelUsage(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, resp)
 }
+
+func ImportCursorProCodexChannelTokens(c *gin.Context) {
+	channelId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, fmt.Errorf("invalid channel id: %w", err))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	result, err := service.ImportCursorProExports(ctx, channelId)
+	if err != nil {
+		common.SysError("failed to import cursorpro codex exports: " + err.Error())
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": "导入 CursorPro token 失败，请稍后重试",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "imported",
+		"data":    result,
+	})
+}
+
+func GetCodexPoolHealth(c *gin.Context) {
+	channelId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, fmt.Errorf("invalid channel id: %w", err))
+		return
+	}
+
+	status, err := service.GetCodexPoolHealthStatus(channelId, time.Now())
+	if err != nil {
+		common.SysError("failed to get codex pool health: " + err.Error())
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    status,
+	})
+}
+
+func GetCursorProReplacementStatus(c *gin.Context) {
+	channelId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, fmt.Errorf("invalid channel id: %w", err))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+
+	status, err := service.GetCursorProReplacementStatus(ctx, channelId, time.Now())
+	if err != nil {
+		common.SysError("failed to get cursorpro replacement status: " + err.Error())
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    status,
+	})
+}
