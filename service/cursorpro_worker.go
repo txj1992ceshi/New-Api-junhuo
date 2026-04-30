@@ -71,6 +71,11 @@ type cursorProTriggerState struct {
 	LastTaskID         string
 	LastTaskFinishedAt string
 	LastResultStatus   string
+	LastErrorCode      string
+	LastErrorMessage   string
+	LastExportCount    int
+	LastExportName     string
+	LastExportMtime    time.Time
 }
 
 var cursorProTriggerStateMap sync.Map
@@ -131,6 +136,37 @@ func filterRecentTimes(times []time.Time, cutoff time.Time) []time.Time {
 		}
 	}
 	return out
+}
+
+type cursorProExportSnapshot struct {
+	Count       int
+	LatestName  string
+	LatestMtime time.Time
+}
+
+func readCursorProExportSnapshot() cursorProExportSnapshot {
+	dir := cursorProCodexExportDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return cursorProExportSnapshot{}
+	}
+	snapshot := cursorProExportSnapshot{}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+			continue
+		}
+		snapshot.Count++
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		modTime := info.ModTime()
+		if modTime.After(snapshot.LatestMtime) {
+			snapshot.LatestMtime = modTime
+			snapshot.LatestName = entry.Name()
+		}
+	}
+	return snapshot
 }
 
 func readCursorProRegisterStatus(ctx context.Context) (*cursorProRegisterStatus, error) {
@@ -214,11 +250,15 @@ func TriggerCursorProReplacement(ctx context.Context, channelID int, reason stri
 	}
 	var statusPayload cursorProRegisterStatus
 	_ = common.Unmarshal(respBody, &statusPayload)
+	exportSnapshot := readCursorProExportSnapshot()
 	state.LastTriggerAt = now
 	state.RecentTriggerTimes = append(state.RecentTriggerTimes, now)
 	if statusPayload.TaskID != "" {
 		state.LastTaskID = statusPayload.TaskID
 	}
+	state.LastExportCount = exportSnapshot.Count
+	state.LastExportName = exportSnapshot.LatestName
+	state.LastExportMtime = exportSnapshot.LatestMtime
 	return &CursorProReplacementResult{
 		Triggered: resp.StatusCode == http.StatusAccepted,
 		Reason:    reason,
@@ -444,14 +484,36 @@ func ReconcileCursorProReplacementState(ctx context.Context) {
 			return true
 		}
 		if status.Status == "succeeded" || status.Status == "failed" {
+			exportSnapshot := readCursorProExportSnapshot()
+			baselineKnown := state.LastExportCount > 0 || state.LastExportName != "" || !state.LastExportMtime.IsZero()
+			exportYielded := false
+			if baselineKnown {
+				exportYielded = exportSnapshot.Count > state.LastExportCount
+				if !exportYielded && !exportSnapshot.LatestMtime.IsZero() && exportSnapshot.LatestMtime.After(state.LastExportMtime) {
+					exportYielded = true
+				}
+				if !exportYielded && exportSnapshot.LatestName != "" && exportSnapshot.LatestName != state.LastExportName {
+					exportYielded = true
+				}
+			}
 			state.LastTaskID = status.TaskID
 			state.LastTaskFinishedAt = status.FinishedAt
 			state.LastResultStatus = status.Status
-			if status.CreatedCount+status.UpdatedCount > 0 {
+			state.LastErrorCode = status.ErrorCode
+			state.LastErrorMessage = status.ErrorMessage
+			if exportYielded && status.Status == "failed" && status.ErrorCode == "register_timeout" {
+				state.LastResultStatus = "succeeded"
+				state.LastErrorCode = "export_detected_after_timeout"
+				state.LastErrorMessage = "Detected new CursorPro export files after timeout; replacement produced new tokens."
+			}
+			if status.CreatedCount+status.UpdatedCount > 0 || exportYielded {
 				state.ConsecutiveNoYield = 0
 			} else {
 				state.ConsecutiveNoYield++
 			}
+			state.LastExportCount = exportSnapshot.Count
+			state.LastExportName = exportSnapshot.LatestName
+			state.LastExportMtime = exportSnapshot.LatestMtime
 			if state.ConsecutiveNoYield >= 3 {
 				state.CircuitOpenUntil = now.Add(30 * time.Minute)
 			}

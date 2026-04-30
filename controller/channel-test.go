@@ -42,6 +42,77 @@ type testResult struct {
 	newAPIError *types.NewAPIError
 }
 
+func testChannelShouldRetry(kind service.CodexErrorKind, rateLimitRetries int, serverRetries int, softRetries int) bool {
+	switch kind {
+	case service.CodexErrorKindRateLimit:
+		return rateLimitRetries <= 2
+	case service.CodexErrorKindServer:
+		return serverRetries <= 2
+	case service.CodexErrorKindSoftFail:
+		return softRetries <= 1
+	default:
+		return false
+	}
+}
+
+func selectedCodexKeyIndexFromTestResult(result testResult) (int, bool) {
+	if result.context == nil || !common.GetContextKeyBool(result.context, constant.ContextKeyChannelIsMultiKey) {
+		return 0, false
+	}
+	return common.GetContextKeyInt(result.context, constant.ContextKeyChannelMultiKeyIndex), true
+}
+
+func testCodexMultiKeyChannelWithRetries(channel *model.Channel, testModel string, endpointType string, isStream bool) testResult {
+	var lastResult testResult
+	rateLimitRetries := 0
+	serverRetries := 0
+	softRetries := 0
+
+	for attempt := 0; attempt < 3; attempt++ {
+		lastResult = testChannel(channel, testModel, endpointType, isStream)
+		if lastResult.newAPIError == nil {
+			if keyIndex, ok := selectedCodexKeyIndexFromTestResult(lastResult); ok {
+				_ = service.MarkCodexKeySuccess(channel.Id, keyIndex, time.Now())
+			}
+			return lastResult
+		}
+
+		keyIndex, ok := selectedCodexKeyIndexFromTestResult(lastResult)
+		kind := service.ClassifyCodexError(nil, nil, lastResult.newAPIError)
+		now := time.Now()
+		switch kind {
+		case service.CodexErrorKindRateLimit:
+			rateLimitRetries++
+			if ok {
+				_ = service.MarkCodexKeyRateLimited(channel.Id, keyIndex, now)
+			}
+		case service.CodexErrorKindServer:
+			serverRetries++
+			if ok {
+				_ = service.MarkCodexKeyServerError(channel.Id, keyIndex, now)
+			}
+		case service.CodexErrorKindAuth:
+			if ok {
+				_ = service.MarkCodexKeyAuthFail(channel.Id, keyIndex, now)
+			}
+			return lastResult
+		case service.CodexErrorKindSoftFail:
+			softRetries++
+			if ok {
+				_ = service.MarkCodexKeySoftFail(channel.Id, keyIndex, now)
+			}
+		default:
+			return lastResult
+		}
+
+		if !testChannelShouldRetry(kind, rateLimitRetries, serverRetries, softRetries) {
+			return lastResult
+		}
+	}
+
+	return lastResult
+}
+
 func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointType string) string {
 	normalized := strings.TrimSpace(endpointType)
 	if normalized != "" {
@@ -54,6 +125,14 @@ func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointTyp
 		return string(constant.EndpointTypeOpenAIResponse)
 	}
 	return normalized
+}
+
+func shouldForceStreamForChannelTest(channel *model.Channel, modelName, endpointType string, isStream bool) bool {
+	if isStream {
+		return true
+	}
+	normalizedEndpoint := normalizeChannelTestEndpoint(channel, modelName, endpointType)
+	return normalizedEndpoint == string(constant.EndpointTypeOpenAIResponse)
 }
 
 func testChannel(channel *model.Channel, testModel string, endpointType string, isStream bool) testResult {
@@ -92,6 +171,7 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 	}
 
 	endpointType = normalizeChannelTestEndpoint(channel, testModel, endpointType)
+	isStream = shouldForceStreamForChannelTest(channel, testModel, endpointType, isStream)
 
 	requestPath := "/v1/chat/completions"
 
@@ -431,7 +511,7 @@ func testChannel(channel *model.Channel, testModel string, endpointType string, 
 			return testResult{
 				context:     c,
 				localErr:    err,
-				newAPIError: types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError),
+				newAPIError: types.NewOpenAIError(err, types.ErrorCodeBadResponse, httpResp.StatusCode),
 			}
 		}
 	}
@@ -755,7 +835,12 @@ func TestChannel(c *gin.Context) {
 	endpointType := c.Query("endpoint_type")
 	isStream, _ := strconv.ParseBool(c.Query("stream"))
 	tik := time.Now()
-	result := testChannel(channel, testModel, endpointType, isStream)
+	var result testResult
+	if channel.Type == constant.ChannelTypeCodex && channel.ChannelInfo.IsMultiKey {
+		result = testCodexMultiKeyChannelWithRetries(channel, testModel, endpointType, isStream)
+	} else {
+		result = testChannel(channel, testModel, endpointType, isStream)
+	}
 	if result.localErr != nil {
 		resp := gin.H{
 			"success": false,

@@ -35,6 +35,8 @@ type CursorProReplacementStatusView struct {
 	LastTaskID              string                   `json:"last_task_id,omitempty"`
 	LastTaskFinishedAt      string                   `json:"last_task_finished_at,omitempty"`
 	LastResultStatus        string                   `json:"last_result_status,omitempty"`
+	LastResultCode          string                   `json:"last_result_code,omitempty"`
+	LastResultMessage       string                   `json:"last_result_message,omitempty"`
 	ControlBaseURL          string                   `json:"control_base_url"`
 	RegisterStatus          *cursorProRegisterStatus `json:"register_status,omitempty"`
 	RegisterStatusError     string                   `json:"register_status_error,omitempty"`
@@ -168,6 +170,8 @@ func GetCursorProReplacementStatus(ctx context.Context, channelID int, now time.
 		LastTaskID:              state.LastTaskID,
 		LastTaskFinishedAt:      state.LastTaskFinishedAt,
 		LastResultStatus:        state.LastResultStatus,
+		LastResultCode:          state.LastErrorCode,
+		LastResultMessage:       state.LastErrorMessage,
 		ControlBaseURL:          cursorProControlBaseURL(),
 		RegisterStatus:          registerStatus,
 		RegisterStatusError:     registerStatusErr,

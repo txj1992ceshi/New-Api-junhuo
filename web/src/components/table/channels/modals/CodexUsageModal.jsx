@@ -18,8 +18,8 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import ReactDOM from 'react-dom/client';
 import {
-  Modal,
   Button,
   Progress,
   Typography,
@@ -183,6 +183,29 @@ const BLOCK_REASON_META = {
   already_running: { color: 'blue', label: '补号任务运行中' },
 };
 
+const RESULT_CODE_META = {
+  register_timeout: {
+    color: 'orange',
+    label: '补号超时',
+    description: '在超时窗口内未检测到新 token 文件变化',
+  },
+  export_detected_after_timeout: {
+    color: 'green',
+    label: '超时后检测到新号',
+    description: '控制层虽然超时结束，但随后检测到了新的 CursorPro token 导出文件',
+  },
+  register_trigger_failed: {
+    color: 'red',
+    label: '触发补号失败',
+    description: '本地触发 CursorPro 补号动作时发生错误',
+  },
+  stale_task_recovered: {
+    color: 'grey',
+    label: '已回收陈旧任务',
+    description: '恢复了上一次遗留的运行中任务状态',
+  },
+};
+
 const getReasonMeta = (code, type) => {
   const normalized = getDisplayText(code);
   if (!normalized) return null;
@@ -199,6 +222,26 @@ const getReasonMeta = (code, type) => {
     code: normalized,
     label: normalized,
     color: 'grey',
+  };
+};
+
+const getResultCodeMeta = (code) => {
+  const normalized = getDisplayText(code);
+  if (!normalized) return null;
+  const meta = RESULT_CODE_META[normalized];
+  if (meta) {
+    return {
+      code: normalized,
+      label: meta.label,
+      color: meta.color,
+      description: meta.description,
+    };
+  }
+  return {
+    code: normalized,
+    label: normalized,
+    color: 'grey',
+    description: '',
   };
 };
 
@@ -466,6 +509,7 @@ const PoolHealthSection = ({ t, poolHealthPayload }) => {
 const ReplacementStatusSection = ({ t, replacementPayload }) => {
   const tt = typeof t === 'function' ? t : (v) => v;
   const data = replacementPayload?.data ?? null;
+  const resultCodeMeta = getResultCodeMeta(data?.last_result_code);
 
   if (!replacementPayload) return null;
 
@@ -540,6 +584,9 @@ const ReplacementStatusSection = ({ t, replacementPayload }) => {
           <Descriptions.Item itemKey={tt('最后结果')}>
             {getDisplayText(data?.last_result_status) || '-'}
           </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('最后结果原因')}>
+            {resultCodeMeta?.label || getDisplayText(data?.last_result_code) || '-'}
+          </Descriptions.Item>
           <Descriptions.Item itemKey={tt('任务完成时间')}>
             {formatTimeText(data?.last_task_finished_at)}
           </Descriptions.Item>
@@ -557,6 +604,14 @@ const ReplacementStatusSection = ({ t, replacementPayload }) => {
         {data?.register_status_error ? (
           <div className='mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700'>
             {tt('读取 CursorPro 状态失败')}: {data.register_status_error}
+          </div>
+        ) : null}
+        {resultCodeMeta?.description || data?.last_result_message ? (
+          <div className='mt-3 rounded-lg border border-semi-color-border bg-semi-color-fill-0 px-3 py-2 text-xs text-semi-color-text-1'>
+            <span className='font-medium text-semi-color-text-0'>
+              {tt('结果说明')}:
+            </span>{' '}
+            {resultCodeMeta?.description || data?.last_result_message}
           </div>
         ) : null}
         <ReasonText
@@ -784,13 +839,17 @@ const CodexUsageLoader = ({ t, record, initialPayload, onCopy }) => {
 
       if (!usageData?.success && !hasShownErrorRef.current) {
         hasShownErrorRef.current = true;
-        showError(tt('获取用量失败'));
+        showError(getDisplayText(usageData?.message) || tt('获取用量失败'));
       }
     } catch (error) {
       if (!mountedRef.current) return;
       if (!hasShownErrorRef.current) {
         hasShownErrorRef.current = true;
-        showError(tt('获取用量失败'));
+        showError(
+          getDisplayText(error?.response?.data?.message) ||
+            error?.message ||
+            tt('获取用量失败'),
+        );
       }
       setPayload({ success: false, message: String(error) });
     } finally {
@@ -849,28 +908,89 @@ const CodexUsageLoader = ({ t, record, initialPayload, onCopy }) => {
   );
 };
 
-export const openCodexUsageModal = ({ t, record, payload, onCopy }) => {
+const CodexUsageModalDialog = ({
+  t,
+  record,
+  payload,
+  onCopy,
+  visible,
+  onClose,
+}) => {
   const tt = typeof t === 'function' ? t : (v) => v;
 
-  Modal.info({
-    title: tt('Codex 帐号与用量'),
-    centered: true,
-    width: 900,
-    style: { maxWidth: '95vw' },
-    content: (
-      <CodexUsageLoader
-        t={tt}
-        record={record}
-        initialPayload={payload}
-        onCopy={onCopy}
-      />
-    ),
-    footer: (
-      <div className='flex justify-end gap-2'>
-        <Button type='primary' theme='solid' onClick={() => Modal.destroyAll()}>
-          {tt('关闭')}
-        </Button>
+  useEffect(() => {
+    document.body.classList.add('codex-usage-modal-open');
+    return () => {
+      document.body.classList.remove('codex-usage-modal-open');
+    };
+  }, []);
+
+  return (
+    <div className='codex-usage-overlay' onClick={onClose}>
+      <div
+        className='codex-usage-panel'
+        role='dialog'
+        aria-modal='true'
+        aria-label={tt('Codex 帐号与用量')}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className='codex-usage-panel__header'>
+          <div className='codex-usage-panel__title'>{tt('Codex 帐号与用量')}</div>
+          <button
+            type='button'
+            className='codex-usage-panel__close'
+            onClick={onClose}
+            aria-label={tt('关闭')}
+          >
+            ×
+          </button>
+        </div>
+        <div
+          className='codex-usage-modal__scroll'
+          onWheelCapture={(event) => {
+            event.stopPropagation();
+          }}
+        >
+          <CodexUsageLoader
+            t={tt}
+            record={record}
+            initialPayload={payload}
+            onCopy={onCopy}
+          />
+        </div>
+        <div className='codex-usage-panel__footer'>
+          <Button type='primary' theme='solid' onClick={onClose}>
+            {tt('关闭')}
+          </Button>
+        </div>
       </div>
-    ),
-  });
+    </div>
+  );
+};
+
+export const openCodexUsageModal = ({ t, record, payload, onCopy }) => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  const root = ReactDOM.createRoot(container);
+
+  const cleanup = () => {
+    try {
+      root.unmount();
+    } finally {
+      if (container.parentNode) {
+        container.parentNode.removeChild(container);
+      }
+    }
+  };
+
+  root.render(
+    <CodexUsageModalDialog
+      t={t}
+      record={record}
+      payload={payload}
+      onCopy={onCopy}
+      visible={true}
+      onClose={cleanup}
+    />,
+  );
 };

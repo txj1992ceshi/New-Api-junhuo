@@ -22,6 +22,9 @@ tiktoken_cache
 web/bun.lock
 plans
 .claude
+bin/chisel
+bin/local-new-api
+config/*.env
 
 electron/node_modules
 electron/dist

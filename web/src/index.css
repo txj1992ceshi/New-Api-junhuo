@@ -31,6 +31,16 @@ body {
   background-color: var(--semi-color-bg-0);
 }
 
+body.codex-usage-modal-open {
+  overflow: hidden !important;
+}
+
+body.codex-usage-modal-open .app-layout,
+body.codex-usage-modal-open .app-layout > .semi-layout,
+body.codex-usage-modal-open .app-layout .semi-layout-content {
+  overflow: hidden !important;
+}
+
 /* 桌面端禁止 body 纵向滚动 - 防止 VChart tooltip 触发页面滚动条 */
 @media (min-width: 768px) {
   body {
@@ -46,6 +56,87 @@ body {
 .app-sider {
   height: calc(100vh - 64px);
   height: calc(100dvh - 64px);
+}
+
+.codex-usage-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 24px 16px;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.codex-usage-panel {
+  width: min(900px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--semi-color-bg-2);
+  border: 1px solid var(--semi-color-border);
+  border-radius: 16px;
+  box-shadow: var(--semi-shadow-elevated);
+  overflow: hidden;
+}
+
+.codex-usage-panel__header,
+.codex-usage-panel__footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 24px;
+  background: var(--semi-color-bg-2);
+}
+
+.codex-usage-panel__header {
+  border-bottom: 1px solid var(--semi-color-border);
+}
+
+.codex-usage-panel__footer {
+  justify-content: flex-end;
+  border-top: 1px solid var(--semi-color-border);
+}
+
+.codex-usage-panel__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--semi-color-text-0);
+}
+
+.codex-usage-panel__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--semi-color-text-1);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.codex-usage-panel__close:hover {
+  background: var(--semi-color-fill-0);
+  color: var(--semi-color-text-0);
+}
+
+.codex-usage-modal__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 20px 24px 16px;
 }
 
 code {
