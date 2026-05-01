@@ -159,6 +159,13 @@ const formatTimeText = (value) => {
   }
 };
 
+const formatDurationMs = (value) => {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num < 0) return '-';
+  if (num < 1000) return `${Math.round(num)} ms`;
+  return `${(num / 1000).toFixed(num >= 10000 ? 0 : 2)} s`;
+};
+
 const STATE_META = {
   healthy: { color: 'green', label: 'Healthy' },
   new: { color: 'blue', label: 'New' },
@@ -174,6 +181,9 @@ const TRIGGER_REASON_META = {
   cooldown_ratio_high: { color: 'red', label: 'Cooldown 占比过高' },
   dead_growth_fast: { color: 'red', label: 'Dead 增长过快' },
   no_available_tokens: { color: 'red', label: '连续无可用 Token' },
+  request_rate_limit_hot_path: { color: 'red', label: '请求热路径遇到限额，已快速补号' },
+  request_exhausted_after_failover: { color: 'orange', label: '本次请求切号后仍失败，已补号' },
+  request_no_available_tokens: { color: 'red', label: '本次请求已无可用 Token，已补号' },
 };
 
 const BLOCK_REASON_META = {
@@ -181,6 +191,95 @@ const BLOCK_REASON_META = {
   cooldown: { color: 'orange', label: '触发冷却中' },
   rate_limited: { color: 'red', label: '触发次数过多' },
   already_running: { color: 'blue', label: '补号任务运行中' },
+};
+
+const COOLDOWN_MODE_META = {
+  time_lock: { color: 'grey', label: '固定时间锁' },
+  result_aware: { color: 'blue', label: '结果感知' },
+  broken_by_pool_critical: { color: 'orange', label: '池风险破冷却' },
+};
+
+const COOLDOWN_BREAK_REASON_META = {
+  cooldown_break_available_count_zero: {
+    color: 'red',
+    label: '池子已归零，允许提前补号',
+  },
+  cooldown_break_no_available_spike: {
+    color: 'orange',
+    label: '连续无可用过多，允许提前补号',
+  },
+  cooldown_break_rate_limit_spike: {
+    color: 'orange',
+    label: '连续限额过多，允许提前补号',
+  },
+};
+
+const SYNC_DIAGNOSIS_META = {
+  source_updated_not_exported: {
+    color: 'orange',
+    label: '源 token 已刷新，但尚未导出',
+  },
+  export_updated_not_imported: {
+    color: 'amber',
+    label: '导出文件已更新，但尚未入池',
+  },
+  imported_pending_probe: {
+    color: 'blue',
+    label: '已入池，等待验活',
+  },
+  probe_succeeded: {
+    color: 'green',
+    label: '新号验活成功',
+  },
+  probe_failed_rate_limit: {
+    color: 'orange',
+    label: '新号验活即限额',
+  },
+  register_gui_blocked: {
+    color: 'red',
+    label: '自动补号被系统权限拦住',
+  },
+  trigger_failed_but_sync_ok: {
+    color: 'green',
+    label: 'GUI 触发失败，但同步链已恢复',
+  },
+  trigger_failed_no_new_source: {
+    color: 'red',
+    label: 'GUI 触发失败，且没有检测到新源号',
+  },
+  source_quiet_pool_low: {
+    color: 'orange',
+    label: '源目录静默且池低水位',
+  },
+};
+
+const TRIGGER_RESULT_META = {
+  trigger_succeeded: { color: 'green', label: 'GUI 补号触发成功' },
+  trigger_failed: { color: 'red', label: 'GUI 补号触发失败' },
+  trigger_skipped: { color: 'grey', label: '本轮未触发 GUI 补号' },
+};
+
+const RECOVERY_RESULT_META = {
+  source_sync_succeeded: { color: 'green', label: '源目录同步成功' },
+  imported_pending_probe: { color: 'blue', label: '已入池，等待验活' },
+  probe_succeeded: { color: 'green', label: '已检测到新号并验活成功' },
+  recovery_failed: { color: 'red', label: '本轮恢复失败' },
+  imported_to_channel: { color: 'blue', label: '新号已入池' },
+  updated_existing_tokens: { color: 'green', label: '现有 token 已更新' },
+};
+
+const RISK_LEVEL_META = {
+  ok: { color: 'green', label: '正常' },
+  degraded: { color: 'orange', label: '降级' },
+  critical: { color: 'red', label: '危险' },
+};
+
+const TIMELINE_STAGE_META = {
+  triggered: { color: 'grey', label: '已触发' },
+  source_detected: { color: 'blue', label: '已检测源刷新' },
+  exported: { color: 'cyan', label: '已导出' },
+  imported: { color: 'violet', label: '已入池' },
+  probed: { color: 'green', label: '已验活' },
 };
 
 const RESULT_CODE_META = {
@@ -203,6 +302,59 @@ const RESULT_CODE_META = {
     color: 'grey',
     label: '已回收陈旧任务',
     description: '恢复了上一次遗留的运行中任务状态',
+  },
+  source_token_detected: {
+    color: 'blue',
+    label: '检测到源 token',
+    description: '控制服务已观察到 CursorPro 源目录中的 token 变化。',
+  },
+  export_written: {
+    color: 'green',
+    label: '已写出导出文件',
+    description: '源 token 已同步写入 CursorPro exports 目录。',
+  },
+  noop: {
+    color: 'grey',
+    label: '本轮无变化',
+    description: '本次同步检查未发现新的源 token 变化。',
+  },
+};
+
+const PROBE_RESULT_META = {
+  probe_pending: {
+    color: 'blue',
+    label: '新号待验活',
+    description: '新导入 token 已入池，正在等待轻量探测。',
+  },
+  probe_succeeded: {
+    color: 'green',
+    label: '新号验活成功',
+    description: '新导入 token 已完成轻量探测并成功通过。',
+  },
+  probe_failed_rate_limit: {
+    color: 'orange',
+    label: '新号验活时已限额',
+    description: '新导入 token 在探测时已命中 usage limit 或 429。',
+  },
+  probe_failed_auth: {
+    color: 'red',
+    label: '新号验活认证失败',
+    description: '新导入 token 在探测时出现认证问题。',
+  },
+  probe_failed_invalid_key: {
+    color: 'red',
+    label: '底层 token 结构损坏，已移除',
+    description: '新导入 token 结构不合法，已直接移出主池。',
+  },
+  probe_failed_soft_fail: {
+    color: 'amber',
+    label: '新号验活网络异常',
+    description: '新导入 token 在探测时出现软网络错误。',
+  },
+  probe_failed_server: {
+    color: 'orange',
+    label: '新号验活上游异常',
+    description: '新导入 token 在探测时出现上游 5xx 或服务异常。',
   },
 };
 
@@ -242,6 +394,62 @@ const getResultCodeMeta = (code) => {
     label: normalized,
     color: 'grey',
     description: '',
+  };
+};
+
+const getProbeResultMeta = (code) => {
+  const normalized = getDisplayText(code);
+  if (!normalized) return null;
+  const meta = PROBE_RESULT_META[normalized];
+  if (meta) {
+    return {
+      code: normalized,
+      label: meta.label,
+      color: meta.color,
+      description: meta.description,
+    };
+  }
+  return {
+    code: normalized,
+    label: normalized,
+    color: 'grey',
+    description: '',
+  };
+};
+
+const getSyncDiagnosisMeta = (code) => {
+  const normalized = getDisplayText(code);
+  if (!normalized) return null;
+  const meta = SYNC_DIAGNOSIS_META[normalized];
+  if (meta) {
+    return {
+      code: normalized,
+      label: meta.label,
+      color: meta.color,
+    };
+  }
+  return {
+    code: normalized,
+    label: normalized,
+    color: 'grey',
+  };
+};
+
+const getSimpleStatusMeta = (code, source) => {
+  const normalized = getDisplayText(code);
+  if (!normalized) return null;
+  const meta = source[normalized];
+  if (meta) {
+    return {
+      code: normalized,
+      label: meta.label,
+      color: meta.color,
+    };
+  }
+  return {
+    code: normalized,
+    label: normalized,
+    color: 'grey',
   };
 };
 
@@ -431,10 +639,71 @@ const ReasonText = ({ t, label, reason, type }) => {
   );
 };
 
+const SyncDiagnosisTag = ({ diagnosis }) => {
+  const meta = getSyncDiagnosisMeta(diagnosis);
+  if (!meta) return null;
+  return (
+    <Tag color={meta.color} type='light'>
+      {meta.label}
+    </Tag>
+  );
+};
+
+const GenericStatusTag = ({ value, source }) => {
+  const meta = getSimpleStatusMeta(value, source);
+  if (!meta) return null;
+  return (
+    <Tag color={meta.color} type='light'>
+      {meta.label}
+    </Tag>
+  );
+};
+
+const RecoveryTimelineSection = ({ t, timeline }) => {
+  const tt = typeof t === 'function' ? t : (v) => v;
+  if (!timeline) return null;
+
+  return (
+    <div className='rounded-lg border border-semi-color-border bg-semi-color-bg-0 p-3'>
+      <div className='mb-3 flex items-center justify-between gap-2'>
+        <div className='text-sm font-semibold text-semi-color-text-0'>
+          {tt('换号时间线')}
+        </div>
+        <GenericStatusTag value={timeline?.current_stage} source={TIMELINE_STAGE_META} />
+      </div>
+      <Descriptions>
+        <Descriptions.Item itemKey={tt('触发补号时间')}>
+          {formatTimeText(timeline?.trigger_at)}
+        </Descriptions.Item>
+        <Descriptions.Item itemKey={tt('源 token 刷新时间')}>
+          {formatTimeText(timeline?.source_detected_at)}
+        </Descriptions.Item>
+        <Descriptions.Item itemKey={tt('导出完成时间')}>
+          {formatTimeText(timeline?.export_written_at)}
+        </Descriptions.Item>
+        <Descriptions.Item itemKey={tt('入池时间')}>
+          {formatTimeText(timeline?.imported_at)}
+        </Descriptions.Item>
+        <Descriptions.Item itemKey={tt('验活完成时间')}>
+          {formatTimeText(timeline?.probed_at)}
+        </Descriptions.Item>
+      </Descriptions>
+      <div className='mt-3 grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3'>
+        <StatusMetricCard title={tt('触发 -> 源刷新')} value={formatDurationMs(timeline?.trigger_to_source_ms)} />
+        <StatusMetricCard title={tt('源刷新 -> 导出')} value={formatDurationMs(timeline?.source_to_export_ms)} />
+        <StatusMetricCard title={tt('导出 -> 入池')} value={formatDurationMs(timeline?.export_to_import_ms)} />
+        <StatusMetricCard title={tt('入池 -> 验活')} value={formatDurationMs(timeline?.import_to_probe_ms)} />
+        <StatusMetricCard title={tt('端到端')} value={formatDurationMs(timeline?.end_to_end_ms)} />
+      </div>
+    </div>
+  );
+};
+
 const PoolHealthSection = ({ t, poolHealthPayload }) => {
   const tt = typeof t === 'function' ? t : (v) => v;
   const data = poolHealthPayload?.data ?? null;
   const health = data?.health ?? {};
+  const tokenStatus = data?.token_status ?? null;
 
   if (!poolHealthPayload) return null;
 
@@ -465,6 +734,7 @@ const PoolHealthSection = ({ t, poolHealthPayload }) => {
             {data?.trigger_recommended ? tt('建议触发') : tt('暂不需要')}
           </Tag>
           <ReasonTag reason={data?.trigger_reason} type='trigger' />
+          <GenericStatusTag value={data?.pool_risk_level} source={RISK_LEVEL_META} />
         </Space>
       </div>
 
@@ -487,7 +757,53 @@ const PoolHealthSection = ({ t, poolHealthPayload }) => {
         <StatusMetricCard
           title={tt('30分钟新增 Dead')}
           value={formatNumber(health?.recent_dead_30m)}
-          hint={tt('用于观察池子衰减速度')}
+          hint={`${tt('5分钟热触发')}: ${formatNumber(data?.recent_hot_path_triggers_5m)}`}
+        />
+        <StatusMetricCard
+          title={tt('5分钟坏 Key')}
+          value={formatNumber(data?.recent_invalid_key_5m)}
+          hint={tt('结构损坏 token 已直接移除')}
+        />
+        <StatusMetricCard
+          title={tt('5分钟验活成功')}
+          value={formatNumber(data?.recent_probe_success_5m)}
+          hint={`${tt('5分钟验活失败')}: ${formatNumber(data?.recent_probe_fail_5m)}`}
+        />
+        <StatusMetricCard
+          title={tt('待验活新号')}
+          value={formatNumber(data?.pending_probe_count)}
+          hint={
+            getProbeResultMeta(data?.last_probe_result)?.label
+              ? `${tt('最近验活')}: ${getProbeResultMeta(data?.last_probe_result)?.label}`
+              : undefined
+          }
+        />
+        <StatusMetricCard
+          title={tt('源目录 token 数')}
+          value={formatNumber(tokenStatus?.source_token_count)}
+          hint={`${tt('导出目录 token 数')}: ${formatNumber(tokenStatus?.export_token_count)}`}
+        />
+        <StatusMetricCard
+          title={tt('同步延迟')}
+          value={
+            tokenStatus?.sync_lag_seconds == null
+              ? '-'
+              : `${Math.round(Number(tokenStatus?.sync_lag_seconds) || 0)}s`
+          }
+          hint={
+            getSyncDiagnosisMeta(data?.sync_diagnosis)?.label
+              ? `${tt('链路诊断')}: ${getSyncDiagnosisMeta(data?.sync_diagnosis)?.label}`
+              : undefined
+          }
+        />
+        <StatusMetricCard
+          title={tt('恢复风险')}
+          value={getSimpleStatusMeta(data?.pool_risk_level, RISK_LEVEL_META)?.label || '-'}
+          hint={
+            data?.last_successful_recovery_reason
+              ? `${tt('最近恢复')}: ${getSimpleStatusMeta(data?.last_successful_recovery_reason, RECOVERY_RESULT_META)?.label || data?.last_successful_recovery_reason}`
+              : undefined
+          }
         />
       </div>
 
@@ -495,6 +811,9 @@ const PoolHealthSection = ({ t, poolHealthPayload }) => {
 
       <div className='rounded-lg bg-semi-color-fill-0 px-3 py-2 text-xs text-semi-color-text-2 break-all'>
         {tt('CursorPro 导出目录')}: {data?.cursorpro_export_dir || '-'}
+        <div className='mt-1'>
+          <SyncDiagnosisTag diagnosis={data?.sync_diagnosis} />
+        </div>
         <ReasonText
           t={tt}
           label='建议原因'
@@ -502,6 +821,46 @@ const PoolHealthSection = ({ t, poolHealthPayload }) => {
           type='trigger'
         />
       </div>
+      {tokenStatus || data?.token_status_error ? (
+        <div className='rounded-lg border border-semi-color-border bg-semi-color-bg-0 p-3'>
+          <Descriptions>
+            <Descriptions.Item itemKey={tt('源目录最新文件')}>
+              {getDisplayText(tokenStatus?.source_latest_file) || '-'}
+            </Descriptions.Item>
+            <Descriptions.Item itemKey={tt('源目录更新时间')}>
+              {formatTimeText(tokenStatus?.source_latest_mtime)}
+            </Descriptions.Item>
+            <Descriptions.Item itemKey={tt('导出目录最新文件')}>
+              {getDisplayText(tokenStatus?.export_latest_file) || '-'}
+            </Descriptions.Item>
+            <Descriptions.Item itemKey={tt('导出目录更新时间')}>
+              {formatTimeText(tokenStatus?.export_latest_mtime)}
+            </Descriptions.Item>
+            <Descriptions.Item itemKey={tt('最近同步时间')}>
+              {formatTimeText(tokenStatus?.last_sync_at)}
+            </Descriptions.Item>
+            <Descriptions.Item itemKey={tt('最近同步结果')}>
+              {getResultCodeMeta(tokenStatus?.last_sync_result)?.label ||
+                getDisplayText(tokenStatus?.last_sync_result) ||
+                '-'}
+            </Descriptions.Item>
+            <Descriptions.Item itemKey={tt('同步原因')}>
+              {getDisplayText(tokenStatus?.last_source_to_export_reason) || '-'}
+            </Descriptions.Item>
+            <Descriptions.Item itemKey={tt('最近入池')}>
+              {formatTimeText(data?.last_import_at)}
+            </Descriptions.Item>
+            <Descriptions.Item itemKey={tt('源静默起点')}>
+              {formatTimeText(data?.source_quiet_since)}
+            </Descriptions.Item>
+          </Descriptions>
+          {data?.token_status_error ? (
+            <div className='mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700'>
+              {tt('读取同步状态失败')}: {data.token_status_error}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -510,6 +869,16 @@ const ReplacementStatusSection = ({ t, replacementPayload }) => {
   const tt = typeof t === 'function' ? t : (v) => v;
   const data = replacementPayload?.data ?? null;
   const resultCodeMeta = getResultCodeMeta(data?.last_result_code);
+  const probeResultMeta = getProbeResultMeta(data?.last_probe_result);
+  const syncResultMeta = getResultCodeMeta(data?.token_status?.last_sync_result);
+  const triggerResultMeta = getSimpleStatusMeta(data?.trigger_result, TRIGGER_RESULT_META);
+  const recoveryResultMeta = getSimpleStatusMeta(data?.recovery_result, RECOVERY_RESULT_META);
+  const riskLevelMeta = getSimpleStatusMeta(data?.pool_risk_level, RISK_LEVEL_META);
+  const cooldownModeMeta = getSimpleStatusMeta(data?.cooldown_mode, COOLDOWN_MODE_META);
+  const cooldownBreakReasonMeta = getSimpleStatusMeta(
+    data?.cooldown_break_reason,
+    COOLDOWN_BREAK_REASON_META,
+  );
 
   if (!replacementPayload) return null;
 
@@ -529,6 +898,8 @@ const ReplacementStatusSection = ({ t, replacementPayload }) => {
             {tt('允许触发')}: {data?.trigger_allowed ? tt('是') : tt('否')}
           </Tag>
           <ReasonTag reason={data?.block_reason} type='block' />
+          <SyncDiagnosisTag diagnosis={data?.sync_diagnosis} />
+          <GenericStatusTag value={data?.pool_risk_level} source={RISK_LEVEL_META} />
           <Tag
             color={data?.trigger_recommended ? 'orange' : 'grey'}
             type='light'
@@ -550,9 +921,43 @@ const ReplacementStatusSection = ({ t, replacementPayload }) => {
           hint={`${tt('熔断阈值')}: ${formatNumber(data?.open_circuit_after_no_yield)}`}
         />
         <StatusMetricCard
+          title={tt('5分钟热触发')}
+          value={formatNumber(data?.recent_hot_path_triggers_5m)}
+          hint={tt('请求侧快速补号次数')}
+        />
+        <StatusMetricCard
+          title={tt('待验活新号')}
+          value={formatNumber(data?.pending_probe_count)}
+          hint={`${tt('5分钟坏 Key')}: ${formatNumber(data?.recent_invalid_key_5m)}`}
+        />
+        <StatusMetricCard
+          title={tt('冷却模式')}
+          value={cooldownModeMeta?.label || '-'}
+          hint={
+            data?.cooldown_base_seconds
+              ? `${tt('基础冷却')}: ${formatNumber(data?.cooldown_base_seconds)}s`
+              : undefined
+          }
+        />
+        <StatusMetricCard
           title={tt('最近触发')}
           value={formatTimeText(data?.last_trigger_at)}
           hint={`${tt('最小间隔')}: ${formatNumber(data?.min_trigger_interval_sec)}s`}
+        />
+        <StatusMetricCard
+          title={tt('剩余冷却')}
+          value={
+            Number(data?.cooldown_seconds_remaining) > 0
+              ? `${formatNumber(data?.cooldown_seconds_remaining)}s`
+              : '-'
+          }
+          hint={
+            cooldownBreakReasonMeta?.label
+              ? `${tt('破冷却')}: ${cooldownBreakReasonMeta.label}`
+              : data?.cooldown_break_allowed
+                ? tt('当前允许提前补号')
+                : undefined
+          }
         />
         <StatusMetricCard
           title={tt('熔断到期')}
@@ -560,6 +965,25 @@ const ReplacementStatusSection = ({ t, replacementPayload }) => {
           hint={
             getReasonMeta(data?.trigger_reason, 'trigger')?.label
               ? `${tt('推荐原因')}: ${getReasonMeta(data?.trigger_reason, 'trigger')?.label}`
+              : undefined
+          }
+        />
+        <StatusMetricCard
+          title={tt('最近同步')}
+          value={formatTimeText(data?.token_status?.last_sync_at)}
+          hint={syncResultMeta?.label ? `${tt('同步结果')}: ${syncResultMeta.label}` : undefined}
+        />
+        <StatusMetricCard
+          title={tt('最近入池')}
+          value={formatTimeText(data?.last_import_at)}
+          hint={getDisplayText(data?.last_import_result) || undefined}
+        />
+        <StatusMetricCard
+          title={tt('风险级别')}
+          value={riskLevelMeta?.label || '-'}
+          hint={
+            recoveryResultMeta?.label
+              ? `${tt('实际恢复')}: ${recoveryResultMeta.label}`
               : undefined
           }
         />
@@ -587,6 +1011,27 @@ const ReplacementStatusSection = ({ t, replacementPayload }) => {
           <Descriptions.Item itemKey={tt('最后结果原因')}>
             {resultCodeMeta?.label || getDisplayText(data?.last_result_code) || '-'}
           </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('触发补号')}>
+            {triggerResultMeta ? (
+              <Tag color={triggerResultMeta.color} type='light'>
+                {triggerResultMeta.label}
+              </Tag>
+            ) : (
+              '-'
+            )}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('实际恢复')}>
+            {recoveryResultMeta ? (
+              <Tag color={recoveryResultMeta.color} type='light'>
+                {recoveryResultMeta.label}
+              </Tag>
+            ) : (
+              '-'
+            )}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('上次触发原因')}>
+            <ReasonTag reason={data?.last_trigger_reason} type='trigger' />
+          </Descriptions.Item>
           <Descriptions.Item itemKey={tt('任务完成时间')}>
             {formatTimeText(data?.last_task_finished_at)}
           </Descriptions.Item>
@@ -600,18 +1045,88 @@ const ReplacementStatusSection = ({ t, replacementPayload }) => {
                 )}`
               : '-'}
           </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('验活模型')}>
+            {getDisplayText(data?.last_probe_model) || '-'}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('验活结果')}>
+            {probeResultMeta ? (
+              <Tag color={probeResultMeta.color} type='light'>
+                {probeResultMeta.label}
+              </Tag>
+            ) : (
+              '-'
+            )}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('同步诊断')}>
+            <SyncDiagnosisTag diagnosis={data?.sync_diagnosis} />
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('最近同步原因')}>
+            {getDisplayText(data?.token_status?.last_source_to_export_reason) || '-'}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('源静默起点')}>
+            {formatTimeText(data?.source_quiet_since)}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('最近恢复时间')}>
+            {formatTimeText(data?.last_successful_recovery_at)}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('冷却模式')}>
+            <GenericStatusTag value={data?.cooldown_mode} source={COOLDOWN_MODE_META} />
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('基础冷却秒数')}>
+            {data?.cooldown_base_seconds ? `${formatNumber(data?.cooldown_base_seconds)}s` : '-'}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('冷却到期时间')}>
+            {formatTimeText(data?.cooldown_until)}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('剩余冷却秒数')}>
+            {Number(data?.cooldown_seconds_remaining) > 0
+              ? `${formatNumber(data?.cooldown_seconds_remaining)}s`
+              : '-'}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('允许破冷却')}>
+            {data?.cooldown_break_allowed ? tt('是') : tt('否')}
+          </Descriptions.Item>
+          <Descriptions.Item itemKey={tt('破冷却原因')}>
+            <GenericStatusTag
+              value={data?.cooldown_break_reason}
+              source={COOLDOWN_BREAK_REASON_META}
+            />
+          </Descriptions.Item>
         </Descriptions>
         {data?.register_status_error ? (
           <div className='mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700'>
             {tt('读取 CursorPro 状态失败')}: {data.register_status_error}
           </div>
         ) : null}
+        {data?.token_status_error ? (
+          <div className='mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700'>
+            {tt('读取同步状态失败')}: {data.token_status_error}
+          </div>
+        ) : null}
         {resultCodeMeta?.description || data?.last_result_message ? (
           <div className='mt-3 rounded-lg border border-semi-color-border bg-semi-color-fill-0 px-3 py-2 text-xs text-semi-color-text-1'>
             <span className='font-medium text-semi-color-text-0'>
-              {tt('结果说明')}:
+              {tt('触发说明')}:
             </span>{' '}
             {resultCodeMeta?.description || data?.last_result_message}
+          </div>
+        ) : null}
+        {recoveryResultMeta?.label || data?.last_successful_recovery_reason ? (
+          <div className='mt-3 rounded-lg border border-semi-color-border bg-semi-color-fill-0 px-3 py-2 text-xs text-semi-color-text-1'>
+            <span className='font-medium text-semi-color-text-0'>
+              {tt('恢复说明')}:
+            </span>{' '}
+            {recoveryResultMeta?.label ||
+              getSimpleStatusMeta(data?.last_successful_recovery_reason, RECOVERY_RESULT_META)?.label ||
+              data?.last_successful_recovery_reason}
+          </div>
+        ) : null}
+        {probeResultMeta?.description ? (
+          <div className='mt-3 rounded-lg border border-semi-color-border bg-semi-color-fill-0 px-3 py-2 text-xs text-semi-color-text-1'>
+            <span className='font-medium text-semi-color-text-0'>
+              {tt('验活说明')}:
+            </span>{' '}
+            {probeResultMeta.description}
           </div>
         ) : null}
         <ReasonText
@@ -621,6 +1136,7 @@ const ReplacementStatusSection = ({ t, replacementPayload }) => {
           type='block'
         />
       </div>
+      <RecoveryTimelineSection t={tt} timeline={data?.recovery_timeline} />
     </div>
   );
 };

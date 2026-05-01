@@ -48,6 +48,7 @@ func ExecuteCodexWithRetries(
 	rateLimitRetries := 0
 	serverRetries := 0
 	softRetries := 0
+	hotPathTriggered := false
 
 	currentKeyIndex := info.ChannelMultiKeyIndex
 	var lastResult *CodexAttemptResult
@@ -66,6 +67,8 @@ func ExecuteCodexWithRetries(
 		case CodexErrorKindRateLimit:
 			_ = MarkCodexKeyRateLimited(info.ChannelId, currentKeyIndex, time.Now())
 			rateLimitRetries++
+		case CodexErrorKindInvalid:
+			_ = MarkCodexKeyInvalid(info.ChannelId, currentKeyIndex, time.Now(), "invalid_key")
 		case CodexErrorKindServer:
 			_ = MarkCodexKeyServerError(info.ChannelId, currentKeyIndex, time.Now())
 			serverRetries++
@@ -78,26 +81,51 @@ func ExecuteCodexWithRetries(
 			return lastResult
 		}
 
-		if !shouldRetryCodexKey(kind, rateLimitRetries, serverRetries, softRetries, limits) {
-			return lastResult
-		}
 		triedKeys[currentKeyIndex] = true
 
 		channel, err := model.CacheGetChannel(info.ChannelId)
 		if err != nil || channel == nil {
 			return lastResult
 		}
-		nextSelection, nextErr := SelectCodexKey(channel, triedKeys, time.Now())
-		if nextErr != nil || nextSelection == nil {
+
+		triedKeyCount := len(triedKeys)
+		maybeTriggerHotPathReplacement := func(selectErr *types.NewAPIError) {
+			if hotPathTriggered {
+				return
+			}
+			if shouldTrigger, reason := ShouldTriggerCursorProReplacementOnHotPath(channel, kind, rateLimitRetries, triedKeyCount, selectErr, time.Now()); shouldTrigger {
+				MaybeTriggerCursorProReplacementOnHotPath(info.ChannelId, reason, time.Now())
+				hotPathTriggered = true
+			}
+		}
+
+		if !shouldRetryCodexKey(kind, rateLimitRetries, serverRetries, softRetries, limits) {
+			maybeTriggerHotPathReplacement(nil)
 			return lastResult
 		}
+		nextSelection, nextErr := SelectCodexKey(channel, triedKeys, time.Now())
+		if nextErr != nil {
+			maybeTriggerHotPathReplacement(nextErr)
+			return lastResult
+		}
+		if nextSelection == nil {
+			maybeTriggerHotPathReplacement(nil)
+			return lastResult
+		}
+		maybeTriggerHotPathReplacement(nil)
 		ApplyCodexSelectionToContext(c, channel, nextSelection)
 		info.InitChannelMeta(c)
 		currentKeyIndex = nextSelection.KeyIndex
 
 		switch kind {
 		case CodexErrorKindRateLimit:
-			time.Sleep(300 * time.Millisecond)
+			if rateLimitRetries > 1 {
+				time.Sleep(500 * time.Millisecond)
+			} else {
+				time.Sleep(200 * time.Millisecond)
+			}
+		case CodexErrorKindInvalid:
+			time.Sleep(100 * time.Millisecond)
 		case CodexErrorKindServer:
 			if serverRetries > 1 {
 				time.Sleep(1 * time.Second)
@@ -117,6 +145,8 @@ func shouldRetryCodexKey(kind CodexErrorKind, rateLimitRetries int, serverRetrie
 		return rateLimitRetries <= limits.Max429Retries
 	case CodexErrorKindServer:
 		return serverRetries <= limits.Max5xxRetries
+	case CodexErrorKindInvalid:
+		return true
 	case CodexErrorKindAuth:
 		return false
 	case CodexErrorKindSoftFail:

@@ -36,6 +36,23 @@ func parseCodexOAuthKey(raw string) (*CodexOAuthKey, error) {
 	if err := common.Unmarshal([]byte(raw), &key); err != nil {
 		return nil, errors.New("codex channel: invalid oauth key json")
 	}
+	if strings.TrimSpace(key.Type) == "" {
+		key.Type = "codex"
+	}
+	if strings.TrimSpace(key.AccountID) == "" {
+		if accountID, ok := ExtractCodexAccountIDFromJWT(key.AccessToken); ok {
+			key.AccountID = accountID
+		} else if accountID, ok := ExtractCodexAccountIDFromJWT(key.IDToken); ok {
+			key.AccountID = accountID
+		}
+	}
+	if strings.TrimSpace(key.Email) == "" {
+		if email, ok := ExtractEmailFromJWT(key.AccessToken); ok {
+			key.Email = email
+		} else if email, ok := ExtractEmailFromJWT(key.IDToken); ok {
+			key.Email = email
+		}
+	}
 	return &key, nil
 }
 

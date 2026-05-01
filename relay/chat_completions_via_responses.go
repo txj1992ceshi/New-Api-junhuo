@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -124,38 +125,74 @@ func chatCompletionsViaResponses(c *gin.Context, info *relaycommon.RelayInfo, ad
 		return nil, types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
 	}
 
-	var httpResp *http.Response
-	resp, err := adaptor.DoRequest(c, info, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
-	}
-	if resp == nil {
-		return nil, types.NewOpenAIError(nil, types.ErrorCodeBadResponse, http.StatusInternalServerError)
-	}
-
 	statusCodeMappingStr := c.GetString("status_code_mapping")
+	result := service.ExecuteCodexWithRetries(c, info, func(c *gin.Context, info *relaycommon.RelayInfo) *service.CodexAttemptResult {
+		var httpResp *http.Response
+		resp, reqErr := adaptor.DoRequest(c, info, bytes.NewBuffer(jsonData))
+		if reqErr != nil {
+			return &service.CodexAttemptResult{
+				Error: types.NewOpenAIError(reqErr, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError),
+			}
+		}
+		if resp == nil {
+			return &service.CodexAttemptResult{
+				Error: types.NewOpenAIError(nil, types.ErrorCodeBadResponse, http.StatusInternalServerError),
+			}
+		}
 
-	httpResp = resp.(*http.Response)
-	info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
-	if httpResp.StatusCode != http.StatusOK {
-		newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
-		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
-		return nil, newApiErr
-	}
+		httpResp = resp.(*http.Response)
+		info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
+		if httpResp.StatusCode != http.StatusOK {
+			newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
+			service.ResetStatusCode(newApiErr, statusCodeMappingStr)
+			return &service.CodexAttemptResult{
+				Response: httpResp,
+				Error:    newApiErr,
+			}
+		}
 
-	if info.IsStream {
-		usage, newApiErr := openaichannel.OaiResponsesToChatStreamHandler(c, info, httpResp)
+		if info.IsStream {
+			usage, newApiErr := openaichannel.OaiResponsesToChatStreamHandler(c, info, httpResp)
+			if newApiErr != nil {
+				service.ResetStatusCode(newApiErr, statusCodeMappingStr)
+				return &service.CodexAttemptResult{
+					Response: httpResp,
+					Error:    newApiErr,
+				}
+			}
+			return &service.CodexAttemptResult{
+				Response: httpResp,
+				Usage:    usage,
+			}
+		}
+
+		usage, newApiErr := openaichannel.OaiResponsesToChatHandler(c, info, httpResp)
 		if newApiErr != nil {
 			service.ResetStatusCode(newApiErr, statusCodeMappingStr)
-			return nil, newApiErr
+			return &service.CodexAttemptResult{
+				Response: httpResp,
+				Error:    newApiErr,
+			}
 		}
-		return usage, nil
+		return &service.CodexAttemptResult{
+			Response: httpResp,
+			Usage:    usage,
+		}
+	}, service.CodexRetryLimits{
+		MaxAttempts:    3,
+		Max429Retries:  2,
+		Max5xxRetries:  2,
+		MaxSoftRetries: 1,
+	})
+	if result == nil {
+		return nil, types.NewErrorWithStatusCode(errors.New("empty codex result"), types.ErrorCodeBadResponse, http.StatusInternalServerError)
 	}
-
-	usage, newApiErr := openaichannel.OaiResponsesToChatHandler(c, info, httpResp)
-	if newApiErr != nil {
-		service.ResetStatusCode(newApiErr, statusCodeMappingStr)
-		return nil, newApiErr
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	usage, ok := result.Usage.(*dto.Usage)
+	if !ok || usage == nil {
+		return nil, types.NewErrorWithStatusCode(errors.New("invalid codex usage result"), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
 	}
 	return usage, nil
 }

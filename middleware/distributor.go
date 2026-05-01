@@ -367,9 +367,27 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
-	key, index, newAPIError := channel.GetNextEnabledKey()
-	if newAPIError != nil {
-		return newAPIError
+	var (
+		key   string
+		index int
+	)
+	if channel.Type == constant.ChannelTypeCodex && channel.ChannelInfo.IsMultiKey {
+		selection, selErr := service.SelectCodexKey(channel, nil, time.Now())
+		if selErr != nil {
+			return selErr
+		}
+		if selection == nil {
+			return types.NewError(errors.New("no available codex key"), types.ErrorCodeChannelNoAvailableKey)
+		}
+		key = selection.Key
+		index = selection.KeyIndex
+	} else {
+		key, index, newAPIError := channel.GetNextEnabledKey()
+		if newAPIError != nil {
+			return newAPIError
+		}
+		_ = key
+		_ = index
 	}
 	if channel.ChannelInfo.IsMultiKey {
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)

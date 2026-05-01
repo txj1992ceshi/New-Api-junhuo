@@ -18,22 +18,57 @@ type CodexKeySelection struct {
 	Meta     *model.ChannelKeyMeta
 }
 
+type codexKeyScrubStats struct {
+	Inspected     int
+	Normalized    int
+	InvalidDead   int
+	RateLimitDead int
+}
+
 func SelectCodexKey(channel *model.Channel, excluded map[int]bool, now time.Time) (*CodexKeySelection, *types.NewAPIError) {
 	if channel == nil {
 		return nil, types.NewError(fmt.Errorf("channel is nil"), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
-	key, index, meta, err := channel.GetNextAvailableCodexKey(excluded, now)
-	if err != nil {
-		if err.GetErrorCode() == types.ErrorCodeChannelNoAvailableKey {
-			RecordCodexNoAvailable(channel.Id, now)
-		}
-		return nil, err
+
+	workingExcluded := make(map[int]bool)
+	for idx, skip := range excluded {
+		workingExcluded[idx] = skip
 	}
-	return &CodexKeySelection{
-		Key:      key,
-		KeyIndex: index,
-		Meta:     meta,
-	}, nil
+
+	maxAttempts := len(channel.GetKeys())
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		key, index, meta, err := channel.GetNextAvailableCodexKey(workingExcluded, now)
+		if err != nil {
+			if err.GetErrorCode() == types.ErrorCodeChannelNoAvailableKey {
+				RecordCodexNoAvailable(channel.Id, now)
+			}
+			return nil, err
+		}
+		if invalidReason := validateCodexOAuthKeyPayload(key); invalidReason != "" {
+			workingExcluded[index] = true
+			_ = MarkCodexKeyInvalid(channel.Id, index, now, invalidReason)
+			continue
+		}
+		normalizedKey, oauthKey, _, changed := normalizeCodexOAuthKeyRaw(key)
+		if changed {
+			key = normalizedKey
+		}
+		if meta != nil && oauthKey != nil {
+			hydrated := hydrateCodexKeyMeta(key, *meta)
+			hydrated = applyCodexOAuthKeyToMeta(hydrated, oauthKey)
+			meta = &hydrated
+		}
+		return &CodexKeySelection{
+			Key:      key,
+			KeyIndex: index,
+			Meta:     meta,
+		}, nil
+	}
+	RecordCodexNoAvailable(channel.Id, now)
+	return nil, types.NewError(fmt.Errorf("no available codex keys"), types.ErrorCodeChannelNoAvailableKey)
 }
 
 type CodexPoolHealth struct {
@@ -70,7 +105,7 @@ func ComputeCodexPoolHealth(channel *model.Channel, now time.Time) *CodexPoolHea
 			if meta.CooldownUntil > now.Unix() {
 				health.Cooldown++
 			} else {
-				health.Healthy++
+				health.Suspect++
 				health.AvailableCount++
 			}
 		case model.CodexKeyStateSuspect:
@@ -156,6 +191,25 @@ func hydrateCodexKeyMeta(key string, meta model.ChannelKeyMeta) model.ChannelKey
 	return meta
 }
 
+func applyCodexOAuthKeyToMeta(meta model.ChannelKeyMeta, oauthKey *CodexOAuthKey) model.ChannelKeyMeta {
+	if oauthKey == nil {
+		return meta
+	}
+	if meta.AccountID == "" {
+		meta.AccountID = strings.TrimSpace(oauthKey.AccountID)
+	}
+	if meta.Email == "" {
+		meta.Email = strings.TrimSpace(oauthKey.Email)
+	}
+	if meta.ExpiresAt == "" {
+		meta.ExpiresAt = strings.TrimSpace(oauthKey.Expired)
+	}
+	if meta.Source == "" {
+		meta.Source = "cursorpro"
+	}
+	return meta
+}
+
 func normalizeServiceCodexKeyMeta(meta model.ChannelKeyMeta) model.ChannelKeyMeta {
 	if meta.State == "" {
 		meta.State = model.CodexKeyStateNew
@@ -220,20 +274,8 @@ func MarkCodexKeyRateLimited(channelID int, keyIndex int, now time.Time) error {
 		meta.Consecutive429++
 		meta.Consecutive5xx = 0
 		meta.ConsecutiveAuthFail = 0
-		switch meta.Consecutive429 {
-		case 1:
-			meta.CooldownUntil = now.Add(2 * time.Minute).Unix()
-		case 2:
-			meta.CooldownUntil = now.Add(10 * time.Minute).Unix()
-		case 3:
-			meta.CooldownUntil = now.Add(30 * time.Minute).Unix()
-		default:
-			meta.CooldownUntil = now.Add(2 * time.Hour).Unix()
-		}
-		meta.State = model.CodexKeyStateCooldown
-		if meta.Consecutive429 >= 4 {
-			meta.State = model.CodexKeyStateSuspect
-		}
+		meta.CooldownUntil = 0
+		meta.State = model.CodexKeyStateDead
 	})
 }
 
@@ -281,4 +323,133 @@ func MarkCodexKeySoftFail(channelID int, keyIndex int, now time.Time) error {
 			meta.State = model.CodexKeyStateSuspect
 		}
 	})
+}
+
+func MarkCodexKeyInvalid(channelID int, keyIndex int, now time.Time, reason string) error {
+	recordCodexInvalidKey(channelID, now)
+	return updateCodexKeyMeta(channelID, keyIndex, func(channel *model.Channel, meta *model.ChannelKeyMeta, _ time.Time) {
+		meta.State = model.CodexKeyStateDead
+		meta.LastErrorAt = now.Unix()
+		meta.LastErrorKind = string(CodexErrorKindInvalid)
+		if strings.TrimSpace(reason) != "" {
+			meta.LastErrorKind = strings.TrimSpace(reason)
+		}
+		meta.TotalFail++
+		meta.CooldownUntil = 0
+	})
+}
+
+func normalizeCodexOAuthKeyRaw(raw string) (string, *CodexOAuthKey, string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, "{") {
+		return "", nil, "invalid_key", false
+	}
+	key, err := parseCodexOAuthKey(trimmed)
+	if err != nil {
+		return "", nil, "invalid_key_json", false
+	}
+	if strings.TrimSpace(key.AccessToken) == "" {
+		return "", key, "invalid_key_missing_access_token", false
+	}
+	if strings.TrimSpace(key.AccountID) == "" {
+		return "", key, "invalid_key_missing_account_id", false
+	}
+	encoded, err := common.Marshal(key)
+	if err != nil {
+		return trimmed, key, "", false
+	}
+	normalized := string(encoded)
+	return normalized, key, "", normalized != trimmed
+}
+
+func shouldAggressivelyEvictRateLimitedKey(meta model.ChannelKeyMeta, now time.Time) bool {
+	meta = normalizeServiceCodexKeyMeta(meta)
+	if meta.State != model.CodexKeyStateCooldown && meta.State != model.CodexKeyStateSuspect {
+		return false
+	}
+	if meta.Consecutive429 < 2 {
+		return false
+	}
+	if meta.LastSuccessAt <= 0 {
+		return true
+	}
+	return now.Sub(time.Unix(meta.LastSuccessAt, 0)) >= 30*time.Minute
+}
+
+func ScrubCodexChannelKeys(channelID int, now time.Time) (*codexKeyScrubStats, error) {
+	channel, guard, err := loadCodexChannelForUpdate(channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer guard.Done()
+	if channel == nil {
+		return nil, fmt.Errorf("channel %d not found", channelID)
+	}
+	if channel.Type != constant.ChannelTypeCodex {
+		return nil, fmt.Errorf("channel %d is not codex", channelID)
+	}
+
+	keys := channel.GetKeys()
+	stats := &codexKeyScrubStats{}
+	updated := false
+	for i, rawKey := range keys {
+		stats.Inspected++
+		meta := hydrateCodexKeyMeta(rawKey, channel.GetKeyMeta(i))
+		normalizedKey, oauthKey, invalidReason, changed := normalizeCodexOAuthKeyRaw(rawKey)
+		if invalidReason != "" {
+			if meta.State != model.CodexKeyStateDead || meta.LastErrorKind != invalidReason || meta.CooldownUntil != 0 {
+				meta.State = model.CodexKeyStateDead
+				meta.LastErrorAt = now.Unix()
+				meta.LastErrorKind = invalidReason
+				meta.TotalFail++
+				meta.CooldownUntil = 0
+				channel.SetKeyMeta(i, meta)
+				updated = true
+			}
+			recordCodexInvalidKey(channelID, now)
+			stats.InvalidDead++
+			continue
+		}
+		if changed {
+			keys[i] = normalizedKey
+			rawKey = normalizedKey
+			stats.Normalized++
+			updated = true
+		}
+		nextMeta := applyCodexOAuthKeyToMeta(hydrateCodexKeyMeta(rawKey, meta), oauthKey)
+		if shouldAggressivelyEvictRateLimitedKey(nextMeta, now) {
+			if nextMeta.State != model.CodexKeyStateDead || nextMeta.LastErrorKind != "rate_limit_exhausted" || nextMeta.CooldownUntil != 0 {
+				nextMeta.State = model.CodexKeyStateDead
+				nextMeta.LastErrorAt = now.Unix()
+				nextMeta.LastErrorKind = "rate_limit_exhausted"
+				nextMeta.CooldownUntil = 0
+				nextMeta.TotalFail++
+				updated = true
+			}
+			stats.RateLimitDead++
+		}
+		if nextMeta != meta {
+			channel.SetKeyMeta(i, nextMeta)
+			updated = true
+		}
+	}
+	if !updated {
+		return stats, nil
+	}
+	channel.Key = strings.Join(keys, "\n")
+	if err := model.DB.Model(&model.Channel{}).Where("id = ?", channel.Id).Updates(map[string]any{
+		"key":          channel.Key,
+		"channel_info": channel.ChannelInfo,
+	}).Error; err != nil {
+		return nil, err
+	}
+	if common.MemoryCacheEnabled {
+		model.CacheUpdateChannel(channel)
+	}
+	return stats, nil
+}
+
+func validateCodexOAuthKeyPayload(raw string) string {
+	_, _, invalidReason, _ := normalizeCodexOAuthKeyRaw(raw)
+	return invalidReason
 }

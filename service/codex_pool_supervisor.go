@@ -92,6 +92,27 @@ func RunCodexPoolSupervisorOnce(ctx context.Context) {
 		if channel == nil || !isCursorProAutoImportEnabled(channel) {
 			continue
 		}
+		if scrubStats, err := ScrubCodexChannelKeys(channel.Id, now); err != nil {
+			logger.LogWarn(ctx, fmt.Sprintf("codex pool supervisor: channel_id=%d scrub failed: %v", channel.Id, err))
+		} else if scrubStats != nil && (scrubStats.InvalidDead > 0 || scrubStats.RateLimitDead > 0 || scrubStats.Normalized > 0) {
+			logger.LogInfo(ctx, fmt.Sprintf(
+				"codex pool supervisor: channel_id=%d scrubbed keys: inspected=%d normalized=%d invalid_dead=%d rate_limit_dead=%d",
+				channel.Id,
+				scrubStats.Inspected,
+				scrubStats.Normalized,
+				scrubStats.InvalidDead,
+				scrubStats.RateLimitDead,
+			))
+			channel, _ = model.GetChannelById(channel.Id, true)
+		}
+		tokenStatus, _ := readCursorProTokenStatus(ctx)
+		state := cursorProStateForChannel(channel.Id)
+		updateCursorProSourceQuietSince(state, tokenStatus, now)
+		if tokenStatus != nil && shouldPrioritizeCursorProSync(tokenStatus, state, now) {
+			_, _ = SyncCursorProTokens(ctx, false, "supervisor_source_priority")
+			_, _ = ImportCursorProExports(ctx, channel.Id)
+			continue
+		}
 		health := ComputeCodexPoolHealth(channel, now)
 		if health == nil {
 			continue
@@ -136,4 +157,24 @@ func ShouldTriggerCursorProReplacement(channel *model.Channel, health *CodexPool
 		return true, "no_available_tokens"
 	}
 	return false, ""
+}
+
+func shouldPrioritizeCursorProSync(tokenStatus *cursorProTokenStatus, state *cursorProTriggerState, now time.Time) bool {
+	if tokenStatus == nil {
+		return false
+	}
+	sourceLatest := parseRFC3339TimeOrZero(tokenStatus.SourceLatestMtime)
+	exportLatest := parseRFC3339TimeOrZero(tokenStatus.ExportLatestMtime)
+	if !sourceLatest.IsZero() && (exportLatest.IsZero() || sourceLatest.After(exportLatest)) {
+		return true
+	}
+	if !sourceLatest.IsZero() && now.Sub(sourceLatest) <= sourceFreshWindow() {
+		if state == nil || state.LastImportAt.IsZero() || sourceLatest.After(state.LastImportAt) {
+			return true
+		}
+	}
+	if state != nil && state.LastImportResult == "imported_to_channel" && state.LastProbeResult == "probe_pending" {
+		return true
+	}
+	return false
 }

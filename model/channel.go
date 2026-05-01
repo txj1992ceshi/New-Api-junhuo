@@ -76,16 +76,31 @@ func (c ChannelInfo) Value() (driver.Value, error) {
 
 // Scan implements sql.Scanner interface
 func (c *ChannelInfo) Scan(value interface{}) error {
-	bytesValue, _ := value.([]byte)
-	return common.Unmarshal(bytesValue, c)
+	switch v := value.(type) {
+	case nil:
+		*c = ChannelInfo{}
+		return nil
+	case []byte:
+		if len(v) == 0 {
+			*c = ChannelInfo{}
+			return nil
+		}
+		return common.Unmarshal(v, c)
+	case string:
+		if strings.TrimSpace(v) == "" {
+			*c = ChannelInfo{}
+			return nil
+		}
+		return common.Unmarshal([]byte(v), c)
+	default:
+		return fmt.Errorf("unsupported ChannelInfo scan type %T", value)
+	}
 }
 
 func (channel *Channel) GetKeys() []string {
 	if channel.Key == "" {
+		channel.Keys = []string{}
 		return []string{}
-	}
-	if len(channel.Keys) > 0 {
-		return channel.Keys
 	}
 	trimmed := strings.TrimSpace(channel.Key)
 	// If the key starts with '[', try to parse it as a JSON array (e.g., for Vertex AI scenarios)
@@ -96,11 +111,13 @@ func (channel *Channel) GetKeys() []string {
 			for i, v := range arr {
 				res[i] = string(v)
 			}
+			channel.Keys = res
 			return res
 		}
 	}
 	// Otherwise, fall back to splitting by newline
 	keys := strings.Split(strings.Trim(channel.Key, "\n"), "\n")
+	channel.Keys = keys
 	return keys
 }
 
@@ -226,14 +243,14 @@ func codexKeyWeight(meta ChannelKeyMeta, now time.Time) int {
 	case CodexKeyStateHealthy:
 		return 100
 	case CodexKeyStateNew:
-		return 60
-	case CodexKeyStateSuspect:
 		return 20
+	case CodexKeyStateSuspect:
+		return 5
 	case CodexKeyStateCooldown:
 		if meta.CooldownUntil > 0 && meta.CooldownUntil > now.Unix() {
 			return 0
 		}
-		return 80
+		return 5
 	default:
 		return 0
 	}

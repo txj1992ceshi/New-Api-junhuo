@@ -63,19 +63,64 @@ type cursorProRegisterStatus struct {
 	LastExportCnt int    `json:"last_export_count"`
 }
 
+type cursorProTokenStatus struct {
+	SourceTokenCount         int     `json:"source_token_count"`
+	SourceLatestFile         string  `json:"source_latest_file"`
+	SourceLatestMtime        string  `json:"source_latest_mtime"`
+	ExportTokenCount         int     `json:"export_token_count"`
+	ExportLatestFile         string  `json:"export_latest_file"`
+	ExportLatestMtime        string  `json:"export_latest_mtime"`
+	LastSyncAt               string  `json:"last_sync_at"`
+	LastSyncResult           string  `json:"last_sync_result"`
+	LastSourceToExportReason string  `json:"last_source_to_export_reason"`
+	SyncLagSeconds           float64 `json:"sync_lag_seconds"`
+}
+
+type cursorProTokenSyncResponse struct {
+	Changed bool                  `json:"changed"`
+	Forced  bool                  `json:"forced"`
+	Reason  string                `json:"reason"`
+	Result  string                `json:"result"`
+	State   *cursorProTokenStatus `json:"state"`
+}
+
 type cursorProTriggerState struct {
-	RecentTriggerTimes []time.Time
-	LastTriggerAt      time.Time
-	CircuitOpenUntil   time.Time
-	ConsecutiveNoYield int
-	LastTaskID         string
-	LastTaskFinishedAt string
-	LastResultStatus   string
-	LastErrorCode      string
-	LastErrorMessage   string
-	LastExportCount    int
-	LastExportName     string
-	LastExportMtime    time.Time
+	RecentTriggerTimes           []time.Time
+	LastTriggerAt                time.Time
+	LastTriggerReason            string
+	CircuitOpenUntil             time.Time
+	ConsecutiveNoYield           int
+	LastTaskID                   string
+	LastTaskFinishedAt           string
+	LastResultStatus             string
+	LastErrorCode                string
+	LastErrorMessage             string
+	LastExportCount              int
+	LastExportName               string
+	LastExportMtime              time.Time
+	LastProbeAt                  time.Time
+	LastProbeModel               string
+	LastProbeResult              string
+	LastImportAt                 time.Time
+	LastImportResult             string
+	LastImportImported           int
+	LastImportUpdated            int
+	LastImportSkipped            int
+	LastImportTotal              int
+	LastSuccessfulRecoveryAt     time.Time
+	LastSuccessfulRecoveryReason string
+	SourceQuietSince             time.Time
+}
+
+type cursorProCooldownDecision struct {
+	Allowed                  bool
+	BlockReason              string
+	CooldownUntil            time.Time
+	CooldownSecondsRemaining int
+	CooldownBaseSeconds      int
+	CooldownMode             string
+	CooldownBreakAllowed     bool
+	CooldownBreakReason      string
 }
 
 var cursorProTriggerStateMap sync.Map
@@ -190,41 +235,225 @@ func readCursorProRegisterStatus(ctx context.Context) (*cursorProRegisterStatus,
 	return &status, nil
 }
 
+func readCursorProTokenStatus(ctx context.Context) (*cursorProTokenStatus, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cursorProControlBaseURL()+"/v1/tokens/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("cursorpro token status failed: status=%d", resp.StatusCode)
+	}
+	var status cursorProTokenStatus
+	if err := common.DecodeJson(resp.Body, &status); err != nil {
+		return nil, err
+	}
+	return &status, nil
+}
+
+func SyncCursorProTokens(ctx context.Context, force bool, reason string) (*cursorProTokenSyncResponse, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	payload := map[string]any{
+		"force":  force,
+		"reason": reason,
+	}
+	body, _ := common.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cursorProControlBaseURL()+"/v1/tokens/sync", bytes.NewBuffer(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("cursorpro token sync failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	var result cursorProTokenSyncResponse
+	if err := common.DecodeJson(resp.Body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+func sourceFreshWindow() time.Duration {
+	return 2 * time.Minute
+}
+
+func cursorProSourceRecentlyUpdated(tokenStatus *cursorProTokenStatus, now time.Time) bool {
+	if tokenStatus == nil {
+		return false
+	}
+	sourceLatest := parseRFC3339TimeOrZero(tokenStatus.SourceLatestMtime)
+	if sourceLatest.IsZero() {
+		return false
+	}
+	return now.Sub(sourceLatest) <= sourceFreshWindow()
+}
+
+func updateCursorProSourceQuietSince(state *cursorProTriggerState, tokenStatus *cursorProTokenStatus, now time.Time) {
+	if state == nil {
+		return
+	}
+	if cursorProSourceRecentlyUpdated(tokenStatus, now) {
+		state.SourceQuietSince = time.Time{}
+		return
+	}
+	if state.SourceQuietSince.IsZero() {
+		state.SourceQuietSince = now
+	}
+}
+
+func recordCursorProSuccessfulRecovery(state *cursorProTriggerState, when time.Time, reason string) {
+	if state == nil {
+		return
+	}
+	state.LastSuccessfulRecoveryAt = when
+	state.LastSuccessfulRecoveryReason = reason
+}
+
+func loadCursorProCooldownContext(channelID int, now time.Time) (*CodexPoolHealth, int, int) {
+	if channelID <= 0 {
+		return nil, 0, 0
+	}
+	channel, err := model.GetChannelById(channelID, true)
+	if err != nil || channel == nil || channel.Type != constant.ChannelTypeCodex {
+		return nil, RecentCodexNoAvailableCount(channelID, now), RecentCodexHotPathTriggerCount(channelID, now)
+	}
+	return ComputeCodexPoolHealth(channel, now), RecentCodexNoAvailableCount(channelID, now), RecentCodexHotPathTriggerCount(channelID, now)
+}
+
+func hasUsableRecoverySinceTrigger(state *cursorProTriggerState, health *CodexPoolHealth, triggerAt time.Time) bool {
+	if state == nil || triggerAt.IsZero() {
+		return false
+	}
+	if !state.LastSuccessfulRecoveryAt.IsZero() && !state.LastSuccessfulRecoveryAt.Before(triggerAt) {
+		return true
+	}
+	if state.LastProbeResult == "probe_succeeded" && !state.LastProbeAt.IsZero() && !state.LastProbeAt.Before(triggerAt) {
+		return true
+	}
+	return health != nil && health.AvailableCount > 0 && !state.LastSuccessfulRecoveryAt.IsZero() && !state.LastSuccessfulRecoveryAt.Before(triggerAt)
+}
+
+func deriveCursorProCooldownBaseSeconds(state *cursorProTriggerState, registerStatus *cursorProRegisterStatus, health *CodexPoolHealth) int {
+	if state == nil || state.LastTriggerAt.IsZero() {
+		return 0
+	}
+	if state.LastResultStatus == "failed" || (registerStatus != nil && registerStatus.Status == "failed") {
+		return 180
+	}
+	if hasUsableRecoverySinceTrigger(state, health, state.LastTriggerAt) {
+		return 45
+	}
+	return 90
+}
+
+func deriveCursorProCooldownBreakReason(health *CodexPoolHealth, recentNoAvailable int, recentHotPath int) string {
+	if health != nil && (health.AvailableCount <= 0 || health.Healthy+health.New <= 0) {
+		return "cooldown_break_available_count_zero"
+	}
+	if recentNoAvailable >= 3 {
+		return "cooldown_break_no_available_spike"
+	}
+	if recentHotPath >= 2 {
+		return "cooldown_break_rate_limit_spike"
+	}
+	return ""
+}
+
+func evaluateCursorProTriggerCooldown(
+	state *cursorProTriggerState,
+	registerStatus *cursorProRegisterStatus,
+	health *CodexPoolHealth,
+	recentNoAvailable int,
+	recentHotPath int,
+	now time.Time,
+) cursorProCooldownDecision {
+	decision := cursorProCooldownDecision{
+		Allowed:      true,
+		CooldownMode: "result_aware",
+	}
+	if state == nil {
+		return decision
+	}
+	state.RecentTriggerTimes = filterRecentTimes(state.RecentTriggerTimes, now.Add(-30*time.Minute))
+	if registerStatus != nil && registerStatus.Status == "running" {
+		decision.Allowed = false
+		decision.BlockReason = "already_running"
+		return decision
+	}
+	if !state.CircuitOpenUntil.IsZero() && state.CircuitOpenUntil.After(now) {
+		decision.Allowed = false
+		decision.BlockReason = "circuit_open"
+		decision.CooldownUntil = state.CircuitOpenUntil
+		return decision
+	}
+	if len(state.RecentTriggerTimes) >= 5 {
+		decision.Allowed = false
+		decision.BlockReason = "rate_limited"
+		return decision
+	}
+	baseSeconds := deriveCursorProCooldownBaseSeconds(state, registerStatus, health)
+	decision.CooldownBaseSeconds = baseSeconds
+	if state.LastTriggerAt.IsZero() || baseSeconds <= 0 {
+		return decision
+	}
+	decision.CooldownUntil = state.LastTriggerAt.Add(time.Duration(baseSeconds) * time.Second)
+	decision.CooldownMode = "result_aware"
+	if !decision.CooldownUntil.After(now) {
+		return decision
+	}
+	breakReason := deriveCursorProCooldownBreakReason(health, recentNoAvailable, recentHotPath)
+	if breakReason != "" {
+		decision.CooldownBreakAllowed = true
+		decision.CooldownBreakReason = breakReason
+		decision.CooldownMode = "broken_by_pool_critical"
+		return decision
+	}
+	decision.Allowed = false
+	decision.BlockReason = "cooldown"
+	decision.CooldownSecondsRemaining = int(decision.CooldownUntil.Sub(now).Seconds())
+	if decision.CooldownSecondsRemaining < 0 {
+		decision.CooldownSecondsRemaining = 0
+	}
+	return decision
+}
+
 func TriggerCursorProReplacement(ctx context.Context, channelID int, reason string) (*CursorProReplacementResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	state := cursorProStateForChannel(channelID)
 	now := time.Now()
-	state.RecentTriggerTimes = filterRecentTimes(state.RecentTriggerTimes, now.Add(-30*time.Minute))
-	if !state.CircuitOpenUntil.IsZero() && state.CircuitOpenUntil.After(now) {
+	tokenStatus, _ := readCursorProTokenStatus(ctx)
+	registerStatus, _ := readCursorProRegisterStatus(ctx)
+	health, recentNoAvailable, recentHotPath := loadCursorProCooldownContext(channelID, now)
+	updateCursorProSourceQuietSince(state, tokenStatus, now)
+	cooldownDecision := evaluateCursorProTriggerCooldown(state, registerStatus, health, recentNoAvailable, recentHotPath, now)
+	if !cooldownDecision.Allowed {
 		return &CursorProReplacementResult{
 			Triggered: false,
 			Reason:    reason,
-			Status:    "circuit_open",
+			Status:    cooldownDecision.BlockReason,
 		}, nil
 	}
-	if !state.LastTriggerAt.IsZero() && now.Sub(state.LastTriggerAt) < 3*time.Minute {
+	if cursorProSourceRecentlyUpdated(tokenStatus, now) {
 		return &CursorProReplacementResult{
 			Triggered: false,
 			Reason:    reason,
-			Status:    "cooldown",
-		}, nil
-	}
-	if len(state.RecentTriggerTimes) >= 5 {
-		return &CursorProReplacementResult{
-			Triggered: false,
-			Reason:    reason,
-			Status:    "rate_limited",
-		}, nil
-	}
-
-	status, err := readCursorProRegisterStatus(ctx)
-	if err == nil && status != nil && status.Status == "running" {
-		return &CursorProReplacementResult{
-			Triggered: false,
-			Reason:    reason,
-			Status:    "already_running",
+			Status:    "trigger_skipped_recent_source_update",
 		}, nil
 	}
 
@@ -252,6 +481,7 @@ func TriggerCursorProReplacement(ctx context.Context, channelID int, reason stri
 	_ = common.Unmarshal(respBody, &statusPayload)
 	exportSnapshot := readCursorProExportSnapshot()
 	state.LastTriggerAt = now
+	state.LastTriggerReason = reason
 	state.RecentTriggerTimes = append(state.RecentTriggerTimes, now)
 	if statusPayload.TaskID != "" {
 		state.LastTaskID = statusPayload.TaskID
@@ -267,12 +497,30 @@ func TriggerCursorProReplacement(ctx context.Context, channelID int, reason stri
 }
 
 func buildCodexOAuthKeyFromCursorProExport(item cursorProExportFile) (string, error) {
+	accountID := strings.TrimSpace(item.AccountID)
+	email := strings.TrimSpace(item.Email)
+	accessToken := strings.TrimSpace(item.Raw.AccessToken)
+	idToken := strings.TrimSpace(item.Raw.IDToken)
+	if accountID == "" {
+		if v, ok := ExtractCodexAccountIDFromJWT(accessToken); ok {
+			accountID = v
+		} else if v, ok := ExtractCodexAccountIDFromJWT(idToken); ok {
+			accountID = v
+		}
+	}
+	if email == "" {
+		if v, ok := ExtractEmailFromJWT(accessToken); ok {
+			email = v
+		} else if v, ok := ExtractEmailFromJWT(idToken); ok {
+			email = v
+		}
+	}
 	key := CodexOAuthKey{
-		IDToken:      strings.TrimSpace(item.Raw.IDToken),
-		AccessToken:  strings.TrimSpace(item.Raw.AccessToken),
+		IDToken:      idToken,
+		AccessToken:  accessToken,
 		RefreshToken: strings.TrimSpace(item.Raw.RefreshToken),
-		AccountID:    strings.TrimSpace(item.AccountID),
-		Email:        strings.TrimSpace(item.Email),
+		AccountID:    accountID,
+		Email:        email,
 		Expired:      strings.TrimSpace(item.ExpiresAt),
 		Type:         "codex",
 	}
@@ -298,7 +546,7 @@ func parseCursorProExportFile(path string) (*cursorProExportFile, error) {
 	return &item, nil
 }
 
-func upsertCursorProToken(channel *model.Channel, key string, item *cursorProExportFile) (bool, bool) {
+func upsertCursorProToken(channel *model.Channel, key string, item *cursorProExportFile) (int, bool, bool) {
 	keys := channel.GetKeys()
 	accountID := strings.TrimSpace(item.AccountID)
 	email := strings.TrimSpace(item.Email)
@@ -314,7 +562,7 @@ func upsertCursorProToken(channel *model.Channel, key string, item *cursorProExp
 			channel.Key = strings.Join(keys, "\n")
 			meta := hydrateCodexKeyMeta(key, channel.GetKeyMeta(i))
 			channel.SetKeyMeta(i, meta)
-			return false, updated
+			return i, false, updated
 		}
 	}
 
@@ -343,7 +591,7 @@ func upsertCursorProToken(channel *model.Channel, key string, item *cursorProExp
 		meta.ExpiresAt = strings.TrimSpace(item.ExpiresAt)
 	}
 	channel.SetKeyMeta(idx, meta)
-	return true, false
+	return idx, true, false
 }
 
 func finalizeCodexMultiKeyChannel(channel *model.Channel) {
@@ -357,6 +605,9 @@ func finalizeCodexMultiKeyChannel(channel *model.Channel) {
 
 func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImportResult, error) {
 	_ = ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	channel, err := model.GetChannelById(channelID, true)
 	if err != nil {
 		return nil, err
@@ -367,6 +618,8 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 	if channel.Type != constant.ChannelTypeCodex {
 		return nil, fmt.Errorf("channel type is not Codex")
 	}
+
+	_, _ = SyncCursorProTokens(ctx, false, "new_api_import")
 
 	exportDir := cursorProCodexExportDir()
 	entries, err := os.ReadDir(exportDir)
@@ -379,6 +632,7 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 	defer lock.Unlock()
 
 	result := &CursorProImportResult{}
+	importedIndexes := make([]int, 0)
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
 			continue
@@ -398,9 +652,10 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 			result.Skipped++
 			continue
 		}
-		imported, updated := upsertCursorProToken(channel, key, item)
+		index, imported, updated := upsertCursorProToken(channel, key, item)
 		if imported {
 			result.Imported++
+			importedIndexes = append(importedIndexes, index)
 		} else if updated {
 			result.Updated++
 		} else {
@@ -422,6 +677,29 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 		model.InitChannelCache()
 	}
 	ResetProxyClientCache()
+	for _, index := range importedIndexes {
+		EnqueueCodexNewKeyProbe(channel.Id, index, "probe_pending")
+	}
+	state := cursorProStateForChannel(channelID)
+	if state != nil {
+		state.LastImportAt = time.Now()
+		state.LastImportImported = result.Imported
+		state.LastImportUpdated = result.Updated
+		state.LastImportSkipped = result.Skipped
+		state.LastImportTotal = result.Total
+		switch {
+		case result.Imported > 0:
+			state.LastImportResult = "imported_to_channel"
+			recordCursorProSuccessfulRecovery(state, state.LastImportAt, state.LastImportResult)
+		case result.Updated > 0:
+			state.LastImportResult = "updated_existing_tokens"
+			recordCursorProSuccessfulRecovery(state, state.LastImportAt, state.LastImportResult)
+		case result.Total > 0:
+			state.LastImportResult = "no_new_tokens_imported"
+		default:
+			state.LastImportResult = "no_export_files"
+		}
+	}
 	return result, nil
 }
 
@@ -461,6 +739,7 @@ func RunCursorProAutoImportOnce(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	_, _ = SyncCursorProTokens(ctx, false, "auto_import_tick")
 	for _, channelID := range channelIDs {
 		_, _ = ImportCursorProExports(ctx, channelID)
 	}
@@ -508,6 +787,7 @@ func ReconcileCursorProReplacementState(ctx context.Context) {
 			}
 			if status.CreatedCount+status.UpdatedCount > 0 || exportYielded {
 				state.ConsecutiveNoYield = 0
+				recordCursorProSuccessfulRecovery(state, now, "source_sync_succeeded")
 			} else {
 				state.ConsecutiveNoYield++
 			}
