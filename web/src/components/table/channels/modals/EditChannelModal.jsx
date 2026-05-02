@@ -64,6 +64,7 @@ import ModelSelectModal from './ModelSelectModal';
 import SingleModelSelectModal from './SingleModelSelectModal';
 import OllamaModelModal from './OllamaModelModal';
 import CodexOAuthModal from './CodexOAuthModal';
+import AntigravityOAuthModal from './AntigravityOAuthModal';
 import { openCodexUsageModal } from './CodexUsageModal';
 import ParamOverrideEditorModal from './ParamOverrideEditorModal';
 import JSONEditor from '../../../common/ui/JSONEditor';
@@ -138,6 +139,13 @@ const MODEL_FETCHABLE_TYPES = new Set([
   1, 4, 14, 34, 17, 26, 27, 24, 47, 25, 20, 23, 31, 40, 42, 48, 43,
 ]);
 
+function normalizeChannelType(value) {
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    return Number(value);
+  }
+  return value;
+}
+
 function type2secretPrompt(type) {
   // inputs.type === 15 ? '按照如下格式输入：APIKey|SecretKey' : (inputs.type === 18 ? '按照如下格式输入：APPID|APISecret|APIKey' : '请输入渠道对应的鉴权密钥')
   switch (type) {
@@ -159,6 +167,8 @@ function type2secretPrompt(type) {
       return '按照如下格式输入: AccessKey|SecretAccessKey';
     case 57:
       return '请输入 JSON 格式的 OAuth 凭据（必须包含 access_token 和 account_id）';
+    case 58:
+      return '请输入 JSON 格式的 OAuth 凭据（必须包含 access_token、refresh_token 和 project_id）';
     default:
       return '请输入渠道对应的鉴权密钥';
   }
@@ -368,6 +378,10 @@ const EditChannelModal = (props) => {
   const [ionetMetadata, setIonetMetadata] = useState(null);
   const [codexOAuthModalVisible, setCodexOAuthModalVisible] = useState(false);
   const [codexCredentialRefreshing, setCodexCredentialRefreshing] =
+    useState(false);
+  const [antigravityOAuthModalVisible, setAntigravityOAuthModalVisible] =
+    useState(false);
+  const [antigravityCredentialRefreshing, setAntigravityCredentialRefreshing] =
     useState(false);
   const [paramOverrideEditorVisible, setParamOverrideEditorVisible] =
     useState(false);
@@ -594,6 +608,9 @@ const EditChannelModal = (props) => {
     ) {
       return;
     }
+    if (name === 'type') {
+      value = normalizeChannelType(value);
+    }
     if (formApiRef.current) {
       formApiRef.current.setValue(name, value);
     }
@@ -671,7 +688,7 @@ const EditChannelModal = (props) => {
       // 重置手动输入模式状态
       setUseManualInput(false);
 
-      if (value === 57) {
+      if (value === 57 || value === 58) {
         setBatch(false);
         setMultiToSingle(false);
         setMultiKeyMode('random');
@@ -960,6 +977,7 @@ const EditChannelModal = (props) => {
       }
 
       initialBaseUrlRef.current = data.base_url || '';
+      data.type = normalizeChannelType(data.type);
       setInputs(data);
       if (formApiRef.current) {
         formApiRef.current.setValues(data);
@@ -1235,6 +1253,32 @@ const EditChannelModal = (props) => {
       showError(error.message || t('刷新失败'));
     } finally {
       setCodexCredentialRefreshing(false);
+    }
+  };
+
+  const handleAntigravityOAuthGenerated = (key) => {
+    handleInputChange('key', key);
+    formatJsonField('key');
+  };
+
+  const handleRefreshAntigravityCredential = async () => {
+    if (!isEdit) return;
+
+    setAntigravityCredentialRefreshing(true);
+    try {
+      const res = await API.post(
+        `/api/channel/${channelId}/antigravity/refresh`,
+        {},
+        { skipErrorHandler: true },
+      );
+      if (!res?.data?.success) {
+        throw new Error(res?.data?.message || 'Failed to refresh credential');
+      }
+      showSuccess(t('凭证已刷新'));
+    } catch (error) {
+      showError(error.message || t('刷新失败'));
+    } finally {
+      setAntigravityCredentialRefreshing(false);
     }
   };
 
@@ -2085,6 +2129,7 @@ const EditChannelModal = (props) => {
     () =>
       CHANNEL_OPTIONS.map((opt) => ({
         ...opt,
+        value: String(opt.value),
         // 保持 label 为纯文本以支持搜索
         label: opt.label,
       })),
@@ -2129,7 +2174,7 @@ const EditChannelModal = (props) => {
       >
         <div className='flex items-center gap-3 w-full'>
           <div className='flex-shrink-0 w-5 h-5 flex items-center justify-center'>
-            {getChannelIcon(value)}
+            {getChannelIcon(normalizeChannelType(value))}
           </div>
           <div className='flex-1 min-w-0'>
             <Highlight
@@ -2859,9 +2904,23 @@ const EditChannelModal = (props) => {
                         filter={selectFilter}
                         autoClearSearchValue={false}
                         searchPosition='dropdown'
+                        value={String(inputs.type ?? '')}
                         onSearch={(value) => setChannelSearchValue(value)}
                         renderOptionItem={renderChannelOption}
                         onChange={(value) => handleInputChange('type', value)}
+                        renderSelectedItem={(optionNode) => {
+                          const channelType = normalizeChannelType(
+                            optionNode?.value,
+                          );
+                          return {
+                            content: (
+                              <span className='flex items-center gap-2'>
+                                {getChannelIcon(channelType)}
+                                <span>{optionNode?.label ?? optionNode?.value}</span>
+                              </span>
+                            ),
+                          };
+                        }}
                         disabled={isIonetLocked}
                       />
 
@@ -2872,6 +2931,17 @@ const EditChannelModal = (props) => {
                           className='mb-4 rounded-xl'
                           description={t(
                             '免责声明：仅限个人使用，请勿分发或共享任何凭证。该渠道存在前置条件与使用门槛，请在充分了解流程与风险后使用，并遵守 OpenAI 的相关条款与政策。相关凭证与配置仅限接入 Codex CLI 使用，不适用于其他客户端、平台或渠道。',
+                          )}
+                        />
+                      )}
+
+                      {inputs.type === 58 && (
+                        <Banner
+                          type='warning'
+                          closeIcon={null}
+                          className='mb-4 rounded-xl'
+                          description={t(
+                            '免责声明：该渠道依赖 Google OAuth 与非官方 Antigravity 网关接入，仅建议个人自用。请勿分发或共享凭据，并自行评估账号、额度与服务稳定性风险。',
                           )}
                         />
                       )}
@@ -3156,6 +3226,107 @@ const EditChannelModal = (props) => {
                                   setCodexOAuthModalVisible(false)
                                 }
                                 onSuccess={handleCodexOAuthGenerated}
+                              />
+                            </>
+                          ) : inputs.type === 58 ? (
+                            <>
+                              <Form.TextArea
+                                field='key'
+                                label={
+                                  isEdit
+                                    ? t(
+                                        '密钥（编辑模式下，保存的密钥不会显示）',
+                                      )
+                                    : t('密钥')
+                                }
+                                placeholder={t(
+                                  '请输入 JSON 格式的 OAuth 凭据，例如：\n{\n  "access_token": "...",\n  "refresh_token": "...",\n  "project_id": "..." \n}',
+                                )}
+                                rules={
+                                  isEdit
+                                    ? []
+                                    : [
+                                        {
+                                          required: true,
+                                          message: t('请输入密钥'),
+                                        },
+                                      ]
+                                }
+                                autoComplete='new-password'
+                                onChange={(value) =>
+                                  handleInputChange('key', value)
+                                }
+                                disabled={isIonetLocked}
+                                extraText={
+                                  <div className='flex flex-col gap-2'>
+                                    <Text type='tertiary' size='small'>
+                                      {t(
+                                        '仅支持 JSON 对象，必须包含 access_token、refresh_token 以及 project_id 或 managed_project_id',
+                                      )}
+                                    </Text>
+
+                                    <Space wrap spacing='tight'>
+                                      <Button
+                                        size='small'
+                                        type='primary'
+                                        theme='outline'
+                                        onClick={() =>
+                                          setAntigravityOAuthModalVisible(true)
+                                        }
+                                        disabled={isIonetLocked}
+                                      >
+                                        {t('Antigravity 授权')}
+                                      </Button>
+                                      {isEdit && (
+                                        <Button
+                                          size='small'
+                                          type='primary'
+                                          theme='outline'
+                                          onClick={
+                                            handleRefreshAntigravityCredential
+                                          }
+                                          loading={
+                                            antigravityCredentialRefreshing
+                                          }
+                                          disabled={isIonetLocked}
+                                        >
+                                          {t('刷新凭证')}
+                                        </Button>
+                                      )}
+                                      <Button
+                                        size='small'
+                                        type='primary'
+                                        theme='outline'
+                                        onClick={() => formatJsonField('key')}
+                                        disabled={isIonetLocked}
+                                      >
+                                        {t('格式化')}
+                                      </Button>
+                                      {isEdit && (
+                                        <Button
+                                          size='small'
+                                          type='primary'
+                                          theme='outline'
+                                          onClick={handleShow2FAModal}
+                                          disabled={isIonetLocked}
+                                        >
+                                          {t('查看密钥')}
+                                        </Button>
+                                      )}
+                                      {batchExtra}
+                                    </Space>
+                                  </div>
+                                }
+                                autosize
+                                showClear
+                              />
+
+                              <AntigravityOAuthModal
+                                visible={antigravityOAuthModalVisible}
+                                onCancel={() =>
+                                  setAntigravityOAuthModalVisible(false)
+                                }
+                                onSuccess={handleAntigravityOAuthGenerated}
                               />
                             </>
                           ) : inputs.type === 41 &&

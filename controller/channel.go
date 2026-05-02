@@ -489,6 +489,25 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 		}
 	}
 
+	if channel.Type == constant.ChannelTypeAntigravity {
+		trimmedKey := strings.TrimSpace(channel.Key)
+		if isAdd || trimmedKey != "" {
+			key, err := service.ParseAntigravityOAuthKey(trimmedKey)
+			if err != nil {
+				return fmt.Errorf("Antigravity key must be a valid JSON object")
+			}
+			if strings.TrimSpace(key.AccessToken) == "" {
+				return fmt.Errorf("Antigravity key JSON must include access_token")
+			}
+			if strings.TrimSpace(key.RefreshToken) == "" {
+				return fmt.Errorf("Antigravity key JSON must include refresh_token")
+			}
+			if strings.TrimSpace(key.EffectiveProjectID()) == "" {
+				return fmt.Errorf("Antigravity key JSON must include project_id or managed_project_id")
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -520,6 +539,39 @@ func RefreshCodexChannelCredential(c *gin.Context) {
 			"channel_id":   ch.Id,
 			"channel_type": ch.Type,
 			"channel_name": ch.Name,
+		},
+	})
+}
+
+func RefreshAntigravityChannelCredential(c *gin.Context) {
+	channelId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, fmt.Errorf("invalid channel id: %w", err))
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 12*time.Second)
+	defer cancel()
+
+	oauthKey, ch, err := service.RefreshAntigravityChannelCredential(ctx, channelId, service.AntigravityCredentialRefreshOptions{ResetCaches: true})
+	if err != nil {
+		common.SysError("failed to refresh antigravity channel credential: " + err.Error())
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "刷新凭证失败，请稍后重试"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "refreshed",
+		"data": gin.H{
+			"expires_at":         oauthKey.Expired,
+			"last_refresh":       oauthKey.LastRefresh,
+			"email":              oauthKey.Email,
+			"project_id":         oauthKey.ProjectID,
+			"managed_project_id": oauthKey.ManagedProjectID,
+			"channel_id":         ch.Id,
+			"channel_type":       ch.Type,
+			"channel_name":       ch.Name,
 		},
 	})
 }

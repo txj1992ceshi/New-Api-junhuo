@@ -382,9 +382,13 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		key = selection.Key
 		index = selection.KeyIndex
 	} else {
-		key, index, newAPIError := channel.GetNextEnabledKey()
+		var newAPIError *types.NewAPIError
+		key, index, newAPIError = channel.GetNextEnabledKey()
 		if newAPIError != nil {
 			return newAPIError
+		}
+		if key == "" && !channel.ChannelInfo.IsMultiKey {
+			key = channel.Key
 		}
 		_ = key
 		_ = index
