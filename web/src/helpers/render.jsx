@@ -361,6 +361,7 @@ export function getChannelIcon(channelType) {
       return <Zhipu.Color size={iconSize} />;
     case 24: // Google Gemini
     case 11: // Google PaLM2
+    case 58: // Antigravity
       return <Gemini.Color size={iconSize} />;
     case 47: // Xinference
       return <Xinference.Color size={iconSize} />;

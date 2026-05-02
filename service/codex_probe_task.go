@@ -259,7 +259,8 @@ func executeCodexKeyProbeAttempt(channelID int, keyIndex int) (CodexErrorKind, *
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
-	client, err := GetHttpClientWithProxy(channel.GetSetting().Proxy)
+	preferIPv4 := channel.GetSetting().PreferIPv4 || channel.Type == constant.ChannelTypeCodex
+	client, err := GetHttpClientWithPreference(channel.GetSetting().Proxy, preferIPv4)
 	if err != nil {
 		apiErr := types.NewErrorWithStatusCode(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
 		return CodexErrorKindServer, apiErr

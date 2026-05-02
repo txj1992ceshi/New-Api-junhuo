@@ -12,6 +12,7 @@ import (
 	"time"
 
 	common2 "github.com/QuantumNous/new-api/common"
+	channelconstant "github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/constant"
@@ -486,13 +487,15 @@ func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	var client *http.Client
 	var err error
-	if info.ChannelSetting.Proxy != "" {
-		client, err = service.NewProxyHttpClient(info.ChannelSetting.Proxy)
-		if err != nil {
+	preferIPv4 := info.ChannelSetting.PreferIPv4 ||
+		info.ChannelType == channelconstant.ChannelTypeAntigravity ||
+		info.ChannelType == channelconstant.ChannelTypeCodex
+	client, err = service.GetHttpClientWithPreference(info.ChannelSetting.Proxy, preferIPv4)
+	if err != nil {
+		if info.ChannelSetting.Proxy != "" {
 			return nil, fmt.Errorf("new proxy http client failed: %w", err)
 		}
-	} else {
-		client = service.GetHttpClient()
+		return nil, fmt.Errorf("new http client failed: %w", err)
 	}
 
 	var stopPinger context.CancelFunc

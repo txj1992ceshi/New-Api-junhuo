@@ -312,6 +312,7 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	if newAPIError != nil {
 		return nil, newAPIError
 	}
+	info.InitChannelMeta(c)
 	return channel, nil
 }
 

@@ -20,6 +20,7 @@ type GeminiChatRequest struct {
 	ToolConfig         *ToolConfig                `json:"toolConfig,omitempty"`
 	SystemInstructions *GeminiChatContent         `json:"systemInstruction,omitempty"`
 	CachedContent      string                     `json:"cachedContent,omitempty"`
+	SessionID          string                     `json:"sessionId,omitempty"`
 }
 
 // UnmarshalJSON allows GeminiChatRequest to accept both snake_case and camelCase fields.

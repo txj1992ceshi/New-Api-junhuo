@@ -21,6 +21,32 @@ var (
 	proxyClients    = make(map[string]*http.Client)
 )
 
+func buildProxyClientCacheKey(proxyURL string, preferIPv4 bool) string {
+	if preferIPv4 {
+		return proxyURL + "|ipv4"
+	}
+	return proxyURL + "|default"
+}
+
+func buildHTTPTransport(proxyFunc func(*http.Request) (*url.URL, error), preferIPv4 bool) *http.Transport {
+	transport := &http.Transport{
+		MaxIdleConns:        common.RelayMaxIdleConns,
+		MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
+		ForceAttemptHTTP2:   true,
+		Proxy:               proxyFunc,
+	}
+	if preferIPv4 {
+		dialer := &net.Dialer{}
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.DialContext(ctx, "tcp4", addr)
+		}
+	}
+	if common.TLSInsecureSkipVerify {
+		transport.TLSClientConfig = common.InsecureTLSConfig
+	}
+	return transport
+}
+
 func checkRedirect(req *http.Request, via []*http.Request) error {
 	fetchSetting := system_setting.GetFetchSetting()
 	urlStr := req.URL.String()
@@ -34,15 +60,7 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 }
 
 func InitHttpClient() {
-	transport := &http.Transport{
-		MaxIdleConns:        common.RelayMaxIdleConns,
-		MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-		ForceAttemptHTTP2:   true,
-		Proxy:               http.ProxyFromEnvironment, // Support HTTP_PROXY, HTTPS_PROXY, NO_PROXY env vars
-	}
-	if common.TLSInsecureSkipVerify {
-		transport.TLSClientConfig = common.InsecureTLSConfig
-	}
+	transport := buildHTTPTransport(http.ProxyFromEnvironment, false)
 
 	if common.RelayTimeout == 0 {
 		httpClient = &http.Client{
@@ -64,10 +82,16 @@ func GetHttpClient() *http.Client {
 
 // GetHttpClientWithProxy returns the default client or a proxy-enabled one when proxyURL is provided.
 func GetHttpClientWithProxy(proxyURL string) (*http.Client, error) {
+	return GetHttpClientWithPreference(proxyURL, false)
+}
+
+func GetHttpClientWithPreference(proxyURL string, preferIPv4 bool) (*http.Client, error) {
 	if proxyURL == "" {
-		return GetHttpClient(), nil
+		if !preferIPv4 {
+			return GetHttpClient(), nil
+		}
 	}
-	return NewProxyHttpClient(proxyURL)
+	return NewProxyHttpClientWithPreference(proxyURL, preferIPv4)
 }
 
 // ResetProxyClientCache 清空代理客户端缓存，确保下次使用时重新初始化
@@ -84,15 +108,26 @@ func ResetProxyClientCache() {
 
 // NewProxyHttpClient 创建支持代理的 HTTP 客户端
 func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
+	return NewProxyHttpClientWithPreference(proxyURL, false)
+}
+
+func NewProxyHttpClientWithPreference(proxyURL string, preferIPv4 bool) (*http.Client, error) {
 	if proxyURL == "" {
-		if client := GetHttpClient(); client != nil {
+		if client := GetHttpClient(); client != nil && !preferIPv4 {
 			return client, nil
 		}
-		return http.DefaultClient, nil
+		transport := buildHTTPTransport(http.ProxyFromEnvironment, preferIPv4)
+		client := &http.Client{
+			Transport:     transport,
+			CheckRedirect: checkRedirect,
+		}
+		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
+		return client, nil
 	}
 
+	cacheKey := buildProxyClientCacheKey(proxyURL, preferIPv4)
 	proxyClientLock.Lock()
-	if client, ok := proxyClients[proxyURL]; ok {
+	if client, ok := proxyClients[cacheKey]; ok {
 		proxyClientLock.Unlock()
 		return client, nil
 	}
@@ -105,22 +140,14 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 
 	switch parsedURL.Scheme {
 	case "http", "https":
-		transport := &http.Transport{
-			MaxIdleConns:        common.RelayMaxIdleConns,
-			MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
-			ForceAttemptHTTP2:   true,
-			Proxy:               http.ProxyURL(parsedURL),
-		}
-		if common.TLSInsecureSkipVerify {
-			transport.TLSClientConfig = common.InsecureTLSConfig
-		}
+		transport := buildHTTPTransport(http.ProxyURL(parsedURL), preferIPv4)
 		client := &http.Client{
 			Transport:     transport,
 			CheckRedirect: checkRedirect,
 		}
 		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
 		proxyClientLock.Lock()
-		proxyClients[proxyURL] = client
+		proxyClients[cacheKey] = client
 		proxyClientLock.Unlock()
 		return client, nil
 
@@ -149,6 +176,9 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 			MaxIdleConnsPerHost: common.RelayMaxIdleConnsPerHost,
 			ForceAttemptHTTP2:   true,
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				if preferIPv4 {
+					network = "tcp4"
+				}
 				return dialer.Dial(network, addr)
 			},
 		}
@@ -159,7 +189,7 @@ func NewProxyHttpClient(proxyURL string) (*http.Client, error) {
 		client := &http.Client{Transport: transport, CheckRedirect: checkRedirect}
 		client.Timeout = time.Duration(common.RelayTimeout) * time.Second
 		proxyClientLock.Lock()
-		proxyClients[proxyURL] = client
+		proxyClients[cacheKey] = client
 		proxyClientLock.Unlock()
 		return client, nil
 

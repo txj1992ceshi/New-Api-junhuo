@@ -578,6 +578,7 @@ func GenRelayInfo(c *gin.Context, relayFormat types.RelayFormat, request dto.Req
 		return nil, errors.New("failed to build relay info")
 	}
 
+	info.InitChannelMeta(c)
 	info.InitRequestConversionChain()
 	return info, nil
 }

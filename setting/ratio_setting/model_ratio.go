@@ -94,6 +94,10 @@ var defaultModelRatio = map[string]float64{
 	"gpt-5":                            0.625,
 	"gpt-5-2025-08-07":                 0.625,
 	"gpt-5-chat-latest":                0.625,
+	"gpt-5.4":                          0.8,
+	"gpt-5.4-mini":                     0.7,
+	"gpt-5.5":                          0.8,
+	"gpt-5.5-mini":                     0.7,
 	"gpt-5-mini":                       0.125,
 	"gpt-5-mini-2025-08-07":            0.125,
 	"gpt-5-nano":                       0.025,
@@ -192,6 +196,18 @@ var defaultModelRatio = map[string]float64{
 	"gemini-robotics-er-1.5-preview":            0.15,
 	"gemini-embedding-001":                      0.075,
 	"text-embedding-004":                        0.001,
+	// Antigravity aliases: keep raw Antigravity / upstream Gemini names billable
+	// at the same level as the exposed OpenAI-compatible aliases used by clients.
+	"antigravity-gemini-3-pro":       0.8,
+	"antigravity-gemini-3.1-pro":     0.8,
+	"antigravity-gemini-3-flash":     0.8,
+	"gemini-3-pro-low":               0.8,
+	"gemini-3.1-pro-low":             0.8,
+	"gemini-3-flash":                 0.8,
+	"antigravity-claude-sonnet-4-6":  1.5,
+	"claude-sonnet-4-6":              1.5,
+	"antigravity-claude-opus-4-6-thinking": 2.5,
+	"claude-opus-4-6-thinking":             2.5,
 	"chatglm_turbo":                             0.3572,     // ￥0.005 / 1k tokens
 	"chatglm_pro":                               0.7143,     // ￥0.01 / 1k tokens
 	"chatglm_std":                               0.3572,     // ￥0.005 / 1k tokens

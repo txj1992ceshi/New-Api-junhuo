@@ -50,12 +50,14 @@ const ChannelsPage = () => {
         handleClose={() => channelsData.setShowEditTag(false)}
         refresh={channelsData.refresh}
       />
-      <EditChannelModal
-        refresh={channelsData.refresh}
-        visible={channelsData.showEdit}
-        handleClose={channelsData.closeEdit}
-        editingChannel={channelsData.editingChannel}
-      />
+      {channelsData.showEdit && (
+        <EditChannelModal
+          refresh={channelsData.refresh}
+          visible={channelsData.showEdit}
+          handleClose={channelsData.closeEdit}
+          editingChannel={channelsData.editingChannel}
+        />
+      )}
       <BatchTagModal {...channelsData} />
       <ModelTestModal {...channelsData} />
       <MultiKeyManageModal
