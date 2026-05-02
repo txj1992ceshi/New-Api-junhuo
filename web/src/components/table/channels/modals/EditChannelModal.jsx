@@ -176,7 +176,8 @@ function type2secretPrompt(type) {
 
 const EditChannelModal = (props) => {
   const { t } = useTranslation();
-  const channelId = props.editingChannel.id;
+  const editingChannel = props.editingChannel || { id: undefined };
+  const channelId = editingChannel.id;
   const isEdit = channelId !== undefined;
   const [loading, setLoading] = useState(isEdit);
   const isMobile = useIsMobile();
@@ -829,6 +830,26 @@ const EditChannelModal = (props) => {
     }
     const { success, message, data } = res.data;
     if (success) {
+      [
+        'openai_organization',
+        'test_model',
+        'base_url',
+        'other',
+        'model_mapping',
+        'status_code_mapping',
+        'other_info',
+        'tag',
+        'setting',
+        'param_override',
+        'header_override',
+        'remark',
+        'settings',
+      ].forEach((field) => {
+        if (data[field] == null) {
+          data[field] = '';
+        }
+      });
+
       if (data.models === '') {
         data.models = [];
       } else {
@@ -1363,7 +1384,7 @@ const EditChannelModal = (props) => {
       setBasicModels(localModels);
       setInputs((inputs) => ({ ...inputs, models: localModels }));
     }
-  }, [props.editingChannel.id]);
+  }, [channelId]);
 
   useEffect(() => {
     if (formApiRef.current) {
@@ -2912,14 +2933,12 @@ const EditChannelModal = (props) => {
                           const channelType = normalizeChannelType(
                             optionNode?.value,
                           );
-                          return {
-                            content: (
-                              <span className='flex items-center gap-2'>
-                                {getChannelIcon(channelType)}
-                                <span>{optionNode?.label ?? optionNode?.value}</span>
-                              </span>
-                            ),
-                          };
+                          return (
+                            <span className='flex items-center gap-2'>
+                              {getChannelIcon(channelType)}
+                              <span>{optionNode?.label ?? optionNode?.value}</span>
+                            </span>
+                          );
                         }}
                         disabled={isIonetLocked}
                       />
@@ -3919,32 +3938,29 @@ const EditChannelModal = (props) => {
                         onChange={(value) => handleInputChange('models', value)}
                         renderSelectedItem={(optionNode) => {
                           const modelName = String(optionNode?.value ?? '');
-                          return {
-                            isRenderInTag: true,
-                            content: (
-                              <span
-                                className='cursor-pointer select-none'
-                                role='button'
-                                tabIndex={0}
-                                title={t('点击复制模型名称')}
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  const ok = await copy(modelName);
-                                  if (ok) {
-                                    showSuccess(
-                                      t('已复制：{{name}}', {
-                                        name: modelName,
-                                      }),
-                                    );
-                                  } else {
-                                    showError(t('复制失败'));
-                                  }
-                                }}
-                              >
-                                {optionNode.label || modelName}
-                              </span>
-                            ),
-                          };
+                          return (
+                            <span
+                              className='cursor-pointer select-none'
+                              role='button'
+                              tabIndex={0}
+                              title={t('点击复制模型名称')}
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const ok = await copy(modelName);
+                                if (ok) {
+                                  showSuccess(
+                                    t('已复制：{{name}}', {
+                                      name: modelName,
+                                    }),
+                                  );
+                                } else {
+                                  showError(t('复制失败'));
+                                }
+                              }}
+                            >
+                              {optionNode?.label || modelName}
+                            </span>
+                          );
                         }}
                         extraText={
                           <Space>
