@@ -1,8 +1,6 @@
 package model
 
 import (
-	"sort"
-
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
@@ -42,85 +40,6 @@ func IsChannelEnabledForAnyGroupModel(groups []string, modelName string, channel
 		}
 	}
 	return false
-}
-
-func GetEnabledChannelsForGroupModel(group string, modelName string) []*Channel {
-	if group == "" || modelName == "" {
-		return nil
-	}
-	if !common.MemoryCacheEnabled {
-		return getEnabledChannelsForGroupModelDB(group, modelName)
-	}
-
-	channelSyncLock.RLock()
-	defer channelSyncLock.RUnlock()
-
-	if group2model2channels == nil {
-		return nil
-	}
-
-	channelIDs := group2model2channels[group][modelName]
-	if len(channelIDs) == 0 {
-		normalized := ratio_setting.FormatMatchingModelName(modelName)
-		if normalized != "" && normalized != modelName {
-			channelIDs = group2model2channels[group][normalized]
-		}
-	}
-	if len(channelIDs) == 0 {
-		return nil
-	}
-
-	channels := make([]*Channel, 0, len(channelIDs))
-	for _, channelID := range channelIDs {
-		if channel, ok := channelsIDM[channelID]; ok && channel != nil && channel.Status == common.ChannelStatusEnabled {
-			channels = append(channels, channel)
-		}
-	}
-	return channels
-}
-
-func getEnabledChannelsForGroupModelDB(group string, modelName string) []*Channel {
-	var channels []*Channel
-	query := DB.Table("channels").
-		Select("channels.*").
-		Joins("JOIN abilities ON abilities.channel_id = channels.id").
-		Where("abilities."+commonGroupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND channels.status = ?", group, modelName, true, common.ChannelStatusEnabled).
-		Order("channels.priority DESC, channels.weight DESC, channels.id ASC")
-
-	if err := query.Find(&channels).Error; err == nil && len(channels) > 0 {
-		return channels
-	}
-
-	normalized := ratio_setting.FormatMatchingModelName(modelName)
-	if normalized == "" || normalized == modelName {
-		return nil
-	}
-
-	channels = nil
-	query = DB.Table("channels").
-		Select("channels.*").
-		Joins("JOIN abilities ON abilities.channel_id = channels.id").
-		Where("abilities."+commonGroupCol+" = ? AND abilities.model = ? AND abilities.enabled = ? AND channels.status = ?", group, normalized, true, common.ChannelStatusEnabled).
-		Order("channels.priority DESC, channels.weight DESC, channels.id ASC")
-	if err := query.Find(&channels).Error; err != nil {
-		return nil
-	}
-	return channels
-}
-
-func SortChannelsByPriorityAndWeight(channels []*Channel) {
-	sort.SliceStable(channels, func(i, j int) bool {
-		if channels[i] == nil || channels[j] == nil {
-			return channels[j] != nil
-		}
-		if channels[i].GetPriority() != channels[j].GetPriority() {
-			return channels[i].GetPriority() > channels[j].GetPriority()
-		}
-		if channels[i].GetWeight() != channels[j].GetWeight() {
-			return channels[i].GetWeight() > channels[j].GetWeight()
-		}
-		return channels[i].Id < channels[j].Id
-	})
 }
 
 func isChannelEnabledForGroupModelDB(group string, modelName string, channelID int) bool {

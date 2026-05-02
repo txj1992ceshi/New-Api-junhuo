@@ -487,7 +487,9 @@ func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	var client *http.Client
 	var err error
-	preferIPv4 := info.ChannelSetting.PreferIPv4 || info.ChannelType == channelconstant.ChannelTypeAntigravity
+	preferIPv4 := info.ChannelSetting.PreferIPv4 ||
+		info.ChannelType == channelconstant.ChannelTypeAntigravity ||
+		info.ChannelType == channelconstant.ChannelTypeCodex
 	client, err = service.GetHttpClientWithPreference(info.ChannelSetting.Proxy, preferIPv4)
 	if err != nil {
 		if info.ChannelSetting.Proxy != "" {

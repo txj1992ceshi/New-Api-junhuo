@@ -1,21 +1,29 @@
-# `junhuo.icu` 三渠道池切换说明
+# `junhuo.icu` 三渠道池统一切换说明
 
 本说明对应以下目标：
 
 - 香港机 `new-api` 作为公网唯一入口
 - `codex-e2e-temp` 账号池继续保留在本机
 - `caowo` 与 `antigravity-openclaw` 收敛到香港机
-- `gpt-5.4 / gpt-5.5` 由客户端类型决定优先路由
+- `gpt-5.4 / gpt-5.5` 按统一渠道优先级故障切换
 
-## 1. 渠道标签约定
+## 1. 统一优先级约定
 
-为避免同名模型继续靠默认 abilities 竞争，香港机侧渠道请固定打以下标签：
+`new-api` 继续使用原生的渠道选择思路，不再按客户端类型做额外分流。
 
-- 本机 Codex 回源代理渠道：`codex_pool`
-- 香港机 Antigravity 渠道：`antigravity_pool`
-- 香港机 Caowo 渠道：`caowo_pool`
+同名模型的渠道顺序固定为：
 
-代码中的客户端优先级依赖这些标签；未打标签时会回退到历史名称/类型识别。
+1. `caowo`
+2. `codex-e2e-temp`
+3. `antigravity-openclaw`
+
+也就是：
+
+- `caowo` 可用时优先使用 `caowo`
+- `caowo` 不可用时回退到本机 `codex-e2e-temp`
+- `codex-e2e-temp` 也不可用时再回退到 `antigravity-openclaw`
+
+实现上依赖渠道/abilities 的 `priority` 配置，而不是客户端识别。
 
 ## 2. 本机 Codex 池回源方式
 
@@ -40,14 +48,12 @@
 
 - `base_url`: `http://127.0.0.1:18080`
 - `key`: `sk-<internal_token>-2`
-- `tag`: `codex_pool`
 - `models`: 仅暴露需要回源本机 Codex 池的模型
 
 该渠道本身不需要是 `ChannelTypeCodex`；它只负责把公网请求回源到本机真实 Codex 池。
 
 ### 3.2 Antigravity 渠道
 
-- `tag`: `antigravity_pool`
 - `type`: `58`
 - `prefer_ipv4`: `true`
 
@@ -55,8 +61,8 @@
 
 ### 3.3 Caowo 渠道
 
-- `tag`: `caowo_pool`
 - 保持原普通 OpenAI 上游 key 语义
+- 对需要统一切换的模型，优先级高于 `codex-e2e-temp` 与 `antigravity-openclaw`
 
 ## 4. Nginx 切换
 
@@ -79,6 +85,7 @@
 2. 香港机本地验证 `antigravity-openclaw`
 3. 香港机通过回源代理验证本机 `codex-e2e-temp`
 4. 验证 `gpt-5.4 / gpt-5.5`：
-   - Codex 客户端优先命中 `codex_pool`
-   - OpenClaw / 普通 OpenAI 客户端优先命中 `antigravity_pool` 或 `caowo_pool`
+   - 所有客户端统一优先命中 `caowo`
+   - `caowo` 不可用时回退到本机 `codex-e2e-temp`
+   - `codex-e2e-temp` 不可用时回退到 `antigravity-openclaw`
 5. 最后再切 `junhuo.icu` 的 Nginx 主入口
