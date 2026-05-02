@@ -50,6 +50,7 @@ import {
   IconAlertTriangle,
 } from '@douyinfe/semi-icons';
 import { FaRandom } from 'react-icons/fa';
+import { isCodexStatusCapableChannel, isRemoteCodexPoolProxy } from './channelCodexProxy';
 
 // Render functions
 const renderType = (type, record = {}, t) => {
@@ -527,6 +528,7 @@ export const getChannelsColumns = ({
       title: t('已用/剩余'),
       dataIndex: 'expired_time',
       render: (text, record, index) => {
+        const codexStatusCapable = isCodexStatusCapableChannel(record);
         if (record.children === undefined) {
           return (
             <div>
@@ -538,7 +540,7 @@ export const getChannelsColumns = ({
                 </Tooltip>
                 <Tooltip
                   content={
-                    record.type === 57
+                    codexStatusCapable
                       ? t('查看 Codex 帐号信息与用量')
                       : t('剩余额度') +
                         ': ' +
@@ -547,13 +549,13 @@ export const getChannelsColumns = ({
                   }
                 >
                   <Tag
-                    color={record.type === 57 ? 'light-blue' : 'white'}
-                    type={record.type === 57 ? 'light' : 'ghost'}
+                    color={codexStatusCapable ? 'light-blue' : 'white'}
+                    type={codexStatusCapable ? 'light' : 'ghost'}
                     shape='circle'
-                    className={record.type === 57 ? 'cursor-pointer' : ''}
+                    className={codexStatusCapable ? 'cursor-pointer' : ''}
                     onClick={() => updateChannelBalance(record)}
                   >
-                    {record.type === 57
+                    {codexStatusCapable
                       ? t('帐号信息')
                       : renderQuotaWithAmount(record.balance)}
                   </Tag>
@@ -814,7 +816,8 @@ export const getChannelsColumns = ({
                 </Button>
               )}
 
-              {record.channel_info?.is_multi_key ? (
+              {record.channel_info?.is_multi_key ||
+              isRemoteCodexPoolProxy(record) ? (
                 <SplitButtonGroup aria-label={t('多密钥渠道操作项目组')}>
                   <Button
                     type='tertiary'

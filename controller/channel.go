@@ -68,6 +68,34 @@ func clearChannelInfo(channel *model.Channel) {
 	}
 }
 
+func markRemoteCodexPoolProxy(channel *model.Channel) {
+	if channel == nil {
+		return
+	}
+	info := channel.GetOtherInfo()
+	info["remote_codex_pool_proxy"] = true
+	channel.SetOtherInfo(info)
+}
+
+func injectRemoteCodexPoolSummary(ctx context.Context, channel *model.Channel) {
+	if channel == nil {
+		return
+	}
+	if _, ok := service.ResolveRemoteCodexPoolProxy(channel); !ok {
+		return
+	}
+	markRemoteCodexPoolProxy(channel)
+	summary, err := service.GetRemoteCodexPoolChannelSummary(ctx, channel)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to load remote codex pool summary: channel_id=%d err=%v", channel.Id, err))
+		return
+	}
+	if summary != nil && summary.ChannelInfo != nil {
+		channel.ChannelInfo = *summary.ChannelInfo
+		clearChannelInfo(channel)
+	}
+}
+
 func GetAllChannels(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	channelData := make([]*model.Channel, 0)
@@ -146,6 +174,11 @@ func GetAllChannels(c *gin.Context) {
 
 	for _, datum := range channelData {
 		clearChannelInfo(datum)
+	}
+	enrichCtx, cancel := context.WithTimeout(c.Request.Context(), 12*time.Second)
+	defer cancel()
+	for _, datum := range channelData {
+		injectRemoteCodexPoolSummary(enrichCtx, datum)
 	}
 
 	countQuery := model.DB.Model(&model.Channel{})
@@ -345,6 +378,11 @@ func SearchChannels(c *gin.Context) {
 	for _, datum := range pagedData {
 		clearChannelInfo(datum)
 	}
+	enrichCtx, cancel := context.WithTimeout(c.Request.Context(), 12*time.Second)
+	defer cancel()
+	for _, datum := range pagedData {
+		injectRemoteCodexPoolSummary(enrichCtx, datum)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -371,6 +409,9 @@ func GetChannel(c *gin.Context) {
 	}
 	if channel != nil {
 		clearChannelInfo(channel)
+		if _, ok := service.ResolveRemoteCodexPoolProxy(channel); ok {
+			markRemoteCodexPoolProxy(channel)
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
@@ -1305,6 +1346,29 @@ func ManageMultiKeys(c *gin.Context) {
 			"success": false,
 			"message": "渠道不存在",
 		})
+		return
+	}
+
+	if _, ok := service.ResolveRemoteCodexPoolProxy(channel); ok {
+		proxy, _ := service.ResolveRemoteCodexPoolProxy(channel)
+		request.ChannelId = proxy.ChannelID
+		payload, marshalErr := common.Marshal(request)
+		if marshalErr != nil {
+			common.ApiError(c, marshalErr)
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+		defer cancel()
+		respBody, _, proxyErr := service.ProxyRemoteCodexPoolJSON(ctx, channel, http.MethodPost, "/api/channel/multi_key/manage", payload)
+		if proxyErr != nil {
+			common.SysError("failed to proxy remote multi key manage: " + proxyErr.Error())
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": proxyErr.Error(),
+			})
+			return
+		}
+		c.Data(http.StatusOK, "application/json; charset=utf-8", respBody)
 		return
 	}
 

@@ -17,6 +17,38 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func proxyRemoteCodexPoolResponse(c *gin.Context, method string, buildPath func(channelID int) string, body []byte, timeout time.Duration) bool {
+	channelId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, fmt.Errorf("invalid channel id: %w", err))
+		return true
+	}
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil {
+		common.ApiError(c, err)
+		return true
+	}
+	if _, ok := service.ResolveRemoteCodexPoolProxy(channel); !ok {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+	defer cancel()
+
+	proxy, _ := service.ResolveRemoteCodexPoolProxy(channel)
+	respBody, _, err := service.ProxyRemoteCodexPoolJSON(ctx, channel, method, buildPath(proxy.ChannelID), body)
+	if err != nil {
+		common.SysError("failed to proxy remote codex pool response: " + err.Error())
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return true
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", respBody)
+	return true
+}
+
 type codexUsageCredential struct {
 	AccessToken  string
 	RefreshToken string
@@ -82,6 +114,12 @@ func tryFetchCodexUsage(
 }
 
 func GetCodexChannelUsage(c *gin.Context) {
+	if proxyRemoteCodexPoolResponse(c, http.MethodGet, func(channelID int) string {
+		return fmt.Sprintf("/api/channel/%d/codex/usage", channelID)
+	}, nil, 20*time.Second) {
+		return
+	}
+
 	channelId, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		common.ApiError(c, fmt.Errorf("invalid channel id: %w", err))
@@ -244,6 +282,12 @@ func ImportCursorProCodexChannelTokens(c *gin.Context) {
 }
 
 func GetCodexPoolHealth(c *gin.Context) {
+	if proxyRemoteCodexPoolResponse(c, http.MethodGet, func(channelID int) string {
+		return fmt.Sprintf("/api/channel/%d/codex/pool_health", channelID)
+	}, nil, 15*time.Second) {
+		return
+	}
+
 	channelId, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		common.ApiError(c, fmt.Errorf("invalid channel id: %w", err))
@@ -268,6 +312,12 @@ func GetCodexPoolHealth(c *gin.Context) {
 }
 
 func GetCursorProReplacementStatus(c *gin.Context) {
+	if proxyRemoteCodexPoolResponse(c, http.MethodGet, func(channelID int) string {
+		return fmt.Sprintf("/api/channel/%d/codex/replacement_status", channelID)
+	}, nil, 15*time.Second) {
+		return
+	}
+
 	channelId, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		common.ApiError(c, fmt.Errorf("invalid channel id: %w", err))

@@ -78,6 +78,7 @@ import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
 } from './statusCodeRiskGuard';
+import { isRemoteCodexPoolProxy } from '../channelCodexProxy';
 import {
   IconSave,
   IconClose,
@@ -1319,6 +1320,15 @@ const EditChannelModal = (props) => {
     });
   };
 
+  const isRemoteCodexProxyEdit =
+    isEdit &&
+    isRemoteCodexPoolProxy({
+      id: channelId,
+      name: inputs.name,
+      base_url: inputs.base_url,
+      other_info: inputs.other_info,
+    });
+
   useEffect(() => {
     if (inputs.type !== 45) {
       doubaoApiClickCountRef.current = 0;
@@ -2235,17 +2245,28 @@ const EditChannelModal = (props) => {
                 {isEdit ? t('更新渠道信息') : t('创建新的渠道')}
               </Title>
             </Space>
-            {!isEdit && (
-              <Button
-                size='small'
-                type='tertiary'
-                className='ec-dbcd0a3c01b55203 shrink-0'
-                icon={<IconBolt />}
-                onClick={pasteFromClipboard}
-              >
-                {t('从剪贴板粘贴配置')}
-              </Button>
-            )}
+            <Space>
+              {isEdit && (inputs.type === 57 || isRemoteCodexProxyEdit) && (
+                <Button
+                  size='small'
+                  type='tertiary'
+                  onClick={handleOpenCodexStatus}
+                >
+                  {t('帐号/池状态')}
+                </Button>
+              )}
+              {!isEdit && (
+                <Button
+                  size='small'
+                  type='tertiary'
+                  className='ec-dbcd0a3c01b55203 shrink-0'
+                  icon={<IconBolt />}
+                  onClick={pasteFromClipboard}
+                >
+                  {t('从剪贴板粘贴配置')}
+                </Button>
+              )}
+            </Space>
           </div>
         }
         bodyStyle={{ padding: '0' }}

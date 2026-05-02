@@ -39,6 +39,7 @@ import { useChannelUpstreamUpdates } from './useChannelUpstreamUpdates';
 import { parseUpstreamUpdateMeta } from './upstreamUpdateUtils';
 import { Modal, Button } from '@douyinfe/semi-ui';
 import { openCodexUsageModal } from '../../components/table/channels/modals/CodexUsageModal';
+import { isCodexStatusCapableChannel } from '../../components/table/channels/channelCodexProxy';
 
 export const useChannelsData = () => {
   const { t } = useTranslation();
@@ -754,7 +755,7 @@ export const useChannelsData = () => {
   };
 
   const updateChannelBalance = async (record) => {
-    if (record?.type === 57) {
+    if (isCodexStatusCapableChannel(record)) {
       openCodexUsageModal({
         t,
         record,
