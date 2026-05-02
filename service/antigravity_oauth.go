@@ -211,7 +211,7 @@ func RefreshAntigravityOAuthTokenWithProxy(ctx context.Context, refreshToken str
 }
 
 func getAntigravityOAuthHTTPClient(proxyURL string) (*http.Client, error) {
-	baseClient, err := GetHttpClientWithProxy(strings.TrimSpace(proxyURL))
+	baseClient, err := GetHttpClientWithPreference(strings.TrimSpace(proxyURL), true)
 	if err != nil {
 		return nil, err
 	}
