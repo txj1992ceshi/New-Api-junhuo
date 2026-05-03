@@ -1,7 +1,6 @@
 package service
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -16,7 +15,10 @@ var defaultResponsesModelMappings = map[int]map[string]string{
 		"gpt-5.4": "gpt-5.5",
 	},
 	constant.ChannelTypeAntigravity: {
-		"gpt-5.4": "gemini-3-flash",
+		"gpt-5.5":      "gemini-3-flash",
+		"gpt-5.5-mini": "gemini-3-flash",
+		"gpt-5.4":      "gemini-3-flash",
+		"gpt-5.4-mini": "gemini-3-flash",
 	},
 }
 
@@ -25,7 +27,10 @@ var defaultResponsesCompactModelMappings = map[int]map[string]string{
 		"gpt-5.4-openai-compact": "gpt-5.5-openai-compact",
 	},
 	constant.ChannelTypeAntigravity: {
-		"gpt-5.4-openai-compact": "gemini-3-flash",
+		"gpt-5.5-openai-compact":      "gemini-3-flash",
+		"gpt-5.5-mini-openai-compact": "gemini-3-flash",
+		"gpt-5.4-openai-compact":      "gemini-3-flash",
+		"gpt-5.4-mini-openai-compact": "gemini-3-flash",
 	},
 }
 
@@ -75,7 +80,7 @@ func ChannelSupportsRequestedModelForRelay(channel *model.Channel, relayMode int
 	if channel == nil {
 		return false
 	}
-	if !RequiresResponsesRouteModelMapping(relayMode, modelName) {
+	if !requiresResponsesRouteModelMappingForChannel(channel.Type, relayMode, modelName) {
 		return true
 	}
 	_, ok := GetResponsesUpstreamModel(channel, relayMode, modelName)
@@ -101,11 +106,32 @@ func MergeChannelModelMappings(baseMapping string, extra map[string]string) stri
 	if len(merged) == 0 {
 		return ""
 	}
-	data, err := json.Marshal(merged)
+	data, err := common.Marshal(merged)
 	if err != nil {
 		return baseMapping
 	}
 	return string(data)
+}
+
+func requiresResponsesRouteModelMappingForChannel(channelType int, relayMode int, modelName string) bool {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return false
+	}
+	if RequiresResponsesRouteModelMapping(relayMode, modelName) {
+		return true
+	}
+	if channelType != constant.ChannelTypeAntigravity {
+		return false
+	}
+	switch relayMode {
+	case relayconstant.RelayModeResponses:
+		return modelName == "gpt-5.5" || modelName == "gpt-5.5-mini" || modelName == "gpt-5.4-mini"
+	case relayconstant.RelayModeResponsesCompact:
+		return modelName == "gpt-5.5-openai-compact" || modelName == "gpt-5.5-mini-openai-compact" || modelName == "gpt-5.4-mini-openai-compact"
+	default:
+		return false
+	}
 }
 
 func getDefaultResponsesModelMapping(channelType int, relayMode int) map[string]string {

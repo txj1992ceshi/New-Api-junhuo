@@ -7,6 +7,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -75,6 +76,21 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatNormalizedInput) {
 			other["responses_compat_normalized_input"] = true
 		}
+		if removedToolItems := common.GetContextKeyInt(ctx, constant.ContextKeyResponsesCompatRemovedToolItems); removedToolItems > 0 {
+			other["responses_compat_removed_tool_items"] = removedToolItems
+		}
+		if removedHistoryItems := common.GetContextKeyInt(ctx, constant.ContextKeyResponsesCompatRemovedHistoryItems); removedHistoryItems > 0 {
+			other["responses_compat_removed_history_items"] = removedHistoryItems
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatIncludeDropped) {
+			other["responses_compat_include_dropped"] = true
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatStoreDropped) {
+			other["responses_compat_store_dropped"] = true
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatParallelToolsDropped) {
+			other["responses_compat_parallel_tool_calls_dropped"] = true
+		}
 	}
 	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateSanitized) {
 		other["responses_state_sanitized"] = true
@@ -117,6 +133,33 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityCredentialRefreshApplied) {
 		adminInfo["antigravity_credential_refresh_applied"] = true
 	}
+	if common.GetContextKeyInt(ctx, constant.ContextKeyChannelType) == constant.ChannelTypeAntigravity && common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatApplied) {
+		adminInfo["antigravity_responses_mode"] = "stateless_transcript"
+		if profile := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatProfile); profile != "" {
+			adminInfo["antigravity_responses_profile"] = profile
+		}
+		if fields := common.GetContextKeyStringSlice(ctx, constant.ContextKeyResponsesCompatRemovedFields); len(fields) > 0 {
+			adminInfo["antigravity_responses_removed_fields"] = fields
+		}
+		if removedToolItems := common.GetContextKeyInt(ctx, constant.ContextKeyResponsesCompatRemovedToolItems); removedToolItems > 0 {
+			adminInfo["antigravity_responses_tool_items_dropped"] = removedToolItems
+		}
+		if removedHistoryItems := common.GetContextKeyInt(ctx, constant.ContextKeyResponsesCompatRemovedHistoryItems); removedHistoryItems > 0 {
+			adminInfo["antigravity_responses_history_items_dropped"] = removedHistoryItems
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatIncludeDropped) {
+			adminInfo["antigravity_responses_include_dropped"] = true
+		}
+		if relayInfo != nil {
+			adminInfo["antigravity_responses_request_type"] = antigravityResponsesRequestType(relayInfo.RelayMode)
+			if relayInfo.UpstreamModelName != "" {
+				adminInfo["antigravity_responses_upstream_model"] = relayInfo.UpstreamModelName
+			}
+		}
+	}
+	if class := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityErrorClass); class != "" && class == string(AntigravityErrorClassProtocolIncompatible) {
+		adminInfo["antigravity_protocol_incompatible"] = true
+	}
 
 	isLocalCountTokens := common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens)
 	if isLocalCountTokens {
@@ -133,6 +176,17 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	appendParamOverrideInfo(relayInfo, other)
 	appendStreamStatus(relayInfo, other)
 	return other
+}
+
+func antigravityResponsesRequestType(relayMode int) string {
+	switch relayMode {
+	case relayconstant.RelayModeResponses:
+		return "responses"
+	case relayconstant.RelayModeResponsesCompact:
+		return "responses_compact"
+	default:
+		return "unknown"
+	}
 }
 
 func appendParamOverrideInfo(relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {

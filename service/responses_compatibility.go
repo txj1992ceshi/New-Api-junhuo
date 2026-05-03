@@ -12,6 +12,7 @@ import (
 )
 
 const ResponsesCompatProfileStatelessV1 = "stateless_responses_v1"
+const ResponsesCompatProfileStatelessV2Antigravity = "responses_stateless_v2_antigravity"
 
 type ResponsesCompatibilityProfile struct {
 	Name string
@@ -24,6 +25,11 @@ type ResponsesCompatibilityResult struct {
 	Mode                    string
 	RemovedFields           []string
 	NormalizedInput         bool
+	RemovedToolItems        int
+	RemovedHistoryItems     int
+	RemovedInclude          bool
+	RemovedStore            bool
+	RemovedParallelToolCall bool
 	HadPreviousResponseID   bool
 	HadConversation         bool
 	HadContextManagement    bool
@@ -84,6 +90,11 @@ func resolveResponsesCompatibilityProfile(relayMode int, originModel string, cha
 	if originModel == "" {
 		return ResponsesCompatibilityProfile{}, false
 	}
+	if channelType == constant.ChannelTypeAntigravity {
+		if isAntigravityResponsesCompatModel(relayMode, originModel) {
+			return ResponsesCompatibilityProfile{Name: ResponsesCompatProfileStatelessV2Antigravity, Mode: "stateless"}, true
+		}
+	}
 	profiles, ok := responsesCompatibilityProfiles[relayMode]
 	if !ok {
 		return ResponsesCompatibilityProfile{}, false
@@ -128,9 +139,29 @@ func applyStatelessResponsesCompatibility(request *dto.OpenAIResponsesRequest, r
 		result.RemovedFields = append(result.RemovedFields, "prompt_cache_retention")
 	}
 
-	if normalizedInput, normalized := normalizeResponsesInputToStateless(request.Input); normalized {
+	if result.Profile == ResponsesCompatProfileStatelessV2Antigravity {
+		if hasRawMessageValue(request.Include) {
+			request.Include = nil
+			result.RemovedInclude = true
+			result.RemovedFields = append(result.RemovedFields, "include")
+		}
+		if hasRawMessageValue(request.Store) {
+			request.Store = nil
+			result.RemovedStore = true
+			result.RemovedFields = append(result.RemovedFields, "store")
+		}
+		if hasRawMessageValue(request.ParallelToolCalls) {
+			request.ParallelToolCalls = nil
+			result.RemovedParallelToolCall = true
+			result.RemovedFields = append(result.RemovedFields, "parallel_tool_calls")
+		}
+	}
+
+	if normalizedInput, normalizeResult := normalizeResponsesInputToStateless(request.Input, result.Profile); normalizeResult.Normalized {
 		request.Input = normalizedInput
 		result.NormalizedInput = true
+		result.RemovedToolItems = normalizeResult.RemovedToolItems
+		result.RemovedHistoryItems = normalizeResult.RemovedHistoryItems
 		result.RemovedFields = append(result.RemovedFields, "input.stateful_history")
 	}
 
@@ -169,13 +200,23 @@ func sanitizeResponsesMetadata(raw json.RawMessage) (json.RawMessage, []string, 
 	return data, removed, true
 }
 
-func normalizeResponsesInputToStateless(raw json.RawMessage) (json.RawMessage, bool) {
+type responsesInputNormalizationResult struct {
+	Normalized          bool
+	RemovedToolItems    int
+	RemovedHistoryItems int
+}
+
+func normalizeResponsesInputToStateless(raw json.RawMessage, profile string) (json.RawMessage, responsesInputNormalizationResult) {
 	if !hasRawMessageValue(raw) || common.GetJsonType(raw) != "array" {
-		return raw, false
+		return raw, responsesInputNormalizationResult{}
 	}
 	var items []map[string]any
 	if err := common.Unmarshal(raw, &items); err != nil {
-		return raw, false
+		return raw, responsesInputNormalizationResult{}
+	}
+
+	if profile == ResponsesCompatProfileStatelessV2Antigravity {
+		return normalizeResponsesInputForAntigravity(items, raw)
 	}
 
 	normalized := make([]map[string]any, 0)
@@ -204,7 +245,14 @@ func normalizeResponsesInputToStateless(raw json.RawMessage) (json.RawMessage, b
 				"content": normalizedContent,
 			})
 		case "input_text", "input_image", "input_file":
-			normalized = append(normalized, cloneSimpleResponsesItem(item))
+			normalized = append(normalized, map[string]any{
+				"type":    "message",
+				"role":    "user",
+				"content": []map[string]any{cloneSimpleResponsesItem(item)},
+			})
+			if itemType != "input_text" {
+				hadStatefulContent = true
+			}
 		case "function_call", "function_call_output":
 			hadStatefulContent = true
 		default:
@@ -215,16 +263,245 @@ func normalizeResponsesInputToStateless(raw json.RawMessage) (json.RawMessage, b
 	}
 
 	if !hadStatefulContent {
-		return raw, false
+		return raw, responsesInputNormalizationResult{}
 	}
 	if len(normalized) == 0 {
-		return raw, false
+		return raw, responsesInputNormalizationResult{}
 	}
 	data, err := common.Marshal(normalized)
 	if err != nil {
-		return raw, false
+		return raw, responsesInputNormalizationResult{}
 	}
-	return data, true
+	return data, responsesInputNormalizationResult{Normalized: true}
+}
+
+func normalizeResponsesInputForAntigravity(items []map[string]any, raw json.RawMessage) (json.RawMessage, responsesInputNormalizationResult) {
+	normalized := make([]map[string]any, 0, len(items))
+	result := responsesInputNormalizationResult{}
+	hadChanges := false
+
+	for _, item := range items {
+		itemType := strings.TrimSpace(common.Interface2String(item["type"]))
+		switch itemType {
+		case "", "message":
+			role := normalizeResponsesTranscriptRole(common.Interface2String(item["role"]))
+			content, changed, toolCount, dropCount := normalizeResponsesMessageContentForAntigravity(item["content"])
+			if toolCount > 0 {
+				result.RemovedToolItems += toolCount
+			}
+			if dropCount > 0 {
+				result.RemovedHistoryItems += dropCount
+			}
+			hadChanges = hadChanges || changed || role != strings.TrimSpace(common.Interface2String(item["role"]))
+			if len(content) == 0 {
+				if itemType != "" || strings.TrimSpace(common.Interface2String(item["role"])) != "user" {
+					result.RemovedHistoryItems++
+					hadChanges = true
+				}
+				continue
+			}
+			normalized = append(normalized, map[string]any{
+				"type":    "message",
+				"role":    role,
+				"content": content,
+			})
+		case "input_text", "input_image", "input_file":
+			normalized = append(normalized, map[string]any{
+				"type":    "message",
+				"role":    "user",
+				"content": []map[string]any{cloneSimpleResponsesItem(item)},
+			})
+			if itemType != "input_text" {
+				hadChanges = true
+			}
+		case "function_call":
+			text := strings.TrimSpace(formatResponsesFunctionCallTranscript(item))
+			result.RemovedToolItems++
+			result.RemovedHistoryItems++
+			hadChanges = true
+			if text == "" {
+				continue
+			}
+			normalized = append(normalized, newResponsesTranscriptMessage("assistant", text))
+		case "function_call_output":
+			text := strings.TrimSpace(formatResponsesFunctionOutputTranscript(item))
+			result.RemovedToolItems++
+			result.RemovedHistoryItems++
+			hadChanges = true
+			if text == "" {
+				continue
+			}
+			normalized = append(normalized, newResponsesTranscriptMessage("user", text))
+		default:
+			if itemType != "" {
+				result.RemovedHistoryItems++
+				hadChanges = true
+			}
+		}
+	}
+
+	if !hadChanges {
+		return raw, responsesInputNormalizationResult{}
+	}
+	if len(normalized) == 0 {
+		return raw, responsesInputNormalizationResult{}
+	}
+	data, err := common.Marshal(normalized)
+	if err != nil {
+		return raw, responsesInputNormalizationResult{}
+	}
+	result.Normalized = true
+	return data, result
+}
+
+func normalizeResponsesMessageContentForAntigravity(content any) ([]map[string]any, bool, int, int) {
+	parts := toResponsesParts(content)
+	if len(parts) == 0 {
+		return nil, false, 0, 0
+	}
+	normalized := make([]map[string]any, 0, len(parts))
+	changed := false
+	removedTools := 0
+	removedHistory := 0
+	for _, part := range parts {
+		partType := strings.TrimSpace(common.Interface2String(part["type"]))
+		switch partType {
+		case "input_text", "output_text", "text":
+			text := strings.TrimSpace(common.Interface2String(part["text"]))
+			if text == "" {
+				if partType != "" {
+					changed = true
+				}
+				continue
+			}
+			normalized = append(normalized, map[string]any{
+				"type": "input_text",
+				"text": text,
+			})
+			if partType != "input_text" {
+				changed = true
+			}
+		case "input_image", "input_file":
+			normalized = append(normalized, cloneSimpleResponsesItem(part))
+		case "function_call":
+			removedTools++
+			removedHistory++
+			changed = true
+			if text := strings.TrimSpace(formatResponsesFunctionCallTranscript(part)); text != "" {
+				normalized = append(normalized, map[string]any{
+					"type": "input_text",
+					"text": text,
+				})
+			}
+		case "function_call_output":
+			removedTools++
+			removedHistory++
+			changed = true
+			if text := strings.TrimSpace(formatResponsesFunctionOutputTranscript(part)); text != "" {
+				normalized = append(normalized, map[string]any{
+					"type": "input_text",
+					"text": text,
+				})
+			}
+		default:
+			if partType != "" {
+				removedHistory++
+				changed = true
+			}
+		}
+	}
+	return normalized, changed, removedTools, removedHistory
+}
+
+func toResponsesParts(content any) []map[string]any {
+	switch v := content.(type) {
+	case []any:
+		parts := make([]map[string]any, 0, len(v))
+		for _, item := range v {
+			if part, ok := item.(map[string]any); ok {
+				parts = append(parts, part)
+			}
+		}
+		return parts
+	case []map[string]any:
+		return v
+	default:
+		return nil
+	}
+}
+
+func normalizeResponsesTranscriptRole(role string) string {
+	switch strings.TrimSpace(role) {
+	case "developer", "system", "user", "assistant":
+		return strings.TrimSpace(role)
+	default:
+		return "user"
+	}
+}
+
+func formatResponsesFunctionCallTranscript(item map[string]any) string {
+	name := strings.TrimSpace(common.Interface2String(item["name"]))
+	arguments := strings.TrimSpace(common.Interface2String(item["arguments"]))
+	callID := strings.TrimSpace(common.Interface2String(item["call_id"]))
+	parts := make([]string, 0, 3)
+	if name != "" {
+		parts = append(parts, "tool_call="+name)
+	}
+	if callID != "" {
+		parts = append(parts, "call_id="+callID)
+	}
+	if arguments != "" {
+		parts = append(parts, "arguments="+arguments)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func formatResponsesFunctionOutputTranscript(item map[string]any) string {
+	callID := strings.TrimSpace(common.Interface2String(item["call_id"]))
+	output := strings.TrimSpace(common.Interface2String(item["output"]))
+	if output == "" {
+		if raw, ok := item["output"]; ok && raw != nil {
+			data, err := common.Marshal(raw)
+			if err == nil {
+				output = strings.TrimSpace(string(data))
+			}
+		}
+	}
+	parts := make([]string, 0, 2)
+	if callID != "" {
+		parts = append(parts, "tool_result_call_id="+callID)
+	}
+	if output != "" {
+		parts = append(parts, "output="+output)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func newResponsesTranscriptMessage(role string, text string) map[string]any {
+	return map[string]any{
+		"type": "message",
+		"role": normalizeResponsesTranscriptRole(role),
+		"content": []map[string]any{{
+			"type": "input_text",
+			"text": text,
+		}},
+	}
+}
+
+func isAntigravityResponsesCompatModel(relayMode int, originModel string) bool {
+	switch relayMode {
+	case relayconstant.RelayModeResponses:
+		switch originModel {
+		case "gpt-5.5", "gpt-5.5-mini", "gpt-5.4", "gpt-5.4-mini":
+			return true
+		}
+	case relayconstant.RelayModeResponsesCompact:
+		switch originModel {
+		case "gpt-5.5-openai-compact", "gpt-5.5-mini-openai-compact", "gpt-5.4-openai-compact", "gpt-5.4-mini-openai-compact":
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeResponsesContentToStateless(content any) ([]map[string]any, bool) {
@@ -291,6 +568,11 @@ func recordResponsesCompatibilityResult(c *gin.Context, result ResponsesCompatib
 	common.SetContextKey(c, constant.ContextKeyResponsesCompatOriginModel, result.OriginModel)
 	common.SetContextKey(c, constant.ContextKeyResponsesCompatChannelType, result.ChannelType)
 	common.SetContextKey(c, constant.ContextKeyResponsesCompatNormalizedInput, result.NormalizedInput)
+	common.SetContextKey(c, constant.ContextKeyResponsesCompatRemovedToolItems, result.RemovedToolItems)
+	common.SetContextKey(c, constant.ContextKeyResponsesCompatRemovedHistoryItems, result.RemovedHistoryItems)
+	common.SetContextKey(c, constant.ContextKeyResponsesCompatIncludeDropped, result.RemovedInclude)
+	common.SetContextKey(c, constant.ContextKeyResponsesCompatStoreDropped, result.RemovedStore)
+	common.SetContextKey(c, constant.ContextKeyResponsesCompatParallelToolsDropped, result.RemovedParallelToolCall)
 	common.SetContextKey(c, constant.ContextKeyResponsesStateSanitized, result.Applied)
 	common.SetContextKey(c, constant.ContextKeyResponsesStateSanitizedFields, result.RemovedFields)
 	common.SetContextKey(c, constant.ContextKeyResponsesStateHadPreviousResponseID, result.HadPreviousResponseID)

@@ -22,7 +22,7 @@ func LogResponsesCompatibilityApplied(c *gin.Context, relayInfo *relaycommon.Rel
 		relayMode = relayInfo.RelayMode
 	}
 	logger.LogInfo(c, fmt.Sprintf(
-		"responses compatibility applied: request_path=%s origin_model_name=%s relay_mode=%d channel_type=%d profile=%s mode=%s normalized_input=%t removed=%s had_previous_response_id=%t had_conversation=%t had_context_management=%t had_prompt_cache_key=%t",
+		"responses compatibility applied: request_path=%s origin_model_name=%s relay_mode=%d channel_type=%d profile=%s mode=%s normalized_input=%t removed=%s removed_tool_items=%d removed_history_items=%d include_dropped=%t store_dropped=%t parallel_tool_calls_dropped=%t had_previous_response_id=%t had_conversation=%t had_context_management=%t had_prompt_cache_key=%t",
 		requestPath,
 		result.OriginModel,
 		relayMode,
@@ -31,6 +31,11 @@ func LogResponsesCompatibilityApplied(c *gin.Context, relayInfo *relaycommon.Rel
 		result.Mode,
 		result.NormalizedInput,
 		strings.Join(result.RemovedFields, ","),
+		result.RemovedToolItems,
+		result.RemovedHistoryItems,
+		result.RemovedInclude,
+		result.RemovedStore,
+		result.RemovedParallelToolCall,
 		result.HadPreviousResponseID,
 		result.HadConversation,
 		result.HadContextManagement,

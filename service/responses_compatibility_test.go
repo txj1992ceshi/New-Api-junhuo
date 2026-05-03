@@ -14,21 +14,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestApplyResponsesCompatibilityProfileStatelessResponses54(t *testing.T) {
+func TestApplyResponsesCompatibilityProfileAntigravity55StatelessTranscript(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 	ctx.Request = httptest.NewRequest("POST", "/v1/responses", nil)
 
 	req := &dto.OpenAIResponsesRequest{
-		Model: "gpt-5.4",
+		Model: "gpt-5.5",
 		Input: mustMarshalCompatRaw([]map[string]any{
+			{
+				"type": "message",
+				"role": "developer",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "you are codex"},
+				},
+			},
 			{
 				"type": "message",
 				"role": "assistant",
 				"content": []map[string]any{
 					{"type": "output_text", "text": "old assistant text"},
-					{"type": "function_call", "name": "web_search", "arguments": "{}"},
+					{"type": "function_call", "name": "web_search", "call_id": "call_0", "arguments": "{}"},
 				},
 			},
 			{
@@ -46,6 +53,9 @@ func TestApplyResponsesCompatibilityProfileStatelessResponses54(t *testing.T) {
 			},
 		}),
 		Instructions:         mustMarshalCompatRaw("be terse"),
+		Include:              mustMarshalCompatRaw([]string{"reasoning.encrypted_content"}),
+		Store:                mustMarshalCompatRaw(false),
+		ParallelToolCalls:    mustMarshalCompatRaw(true),
 		PreviousResponseID:   "resp_123",
 		Conversation:         mustMarshalCompatRaw(map[string]any{"id": "conv_123"}),
 		ContextManagement:    mustMarshalCompatRaw(map[string]any{"mode": "resume"}),
@@ -65,30 +75,42 @@ func TestApplyResponsesCompatibilityProfileStatelessResponses54(t *testing.T) {
 		}),
 	}
 
-	result := ApplyResponsesCompatibilityProfile(ctx, relayconstant.RelayModeResponses, constant.ChannelTypeAntigravity, "gpt-5.4", req)
+	result := ApplyResponsesCompatibilityProfile(ctx, relayconstant.RelayModeResponses, constant.ChannelTypeAntigravity, "gpt-5.5", req)
 	require.True(t, result.Applied)
-	require.Equal(t, ResponsesCompatProfileStatelessV1, result.Profile)
+	require.Equal(t, ResponsesCompatProfileStatelessV2Antigravity, result.Profile)
 	require.Equal(t, "stateless", result.Mode)
 	require.True(t, result.NormalizedInput)
+	require.True(t, result.RemovedInclude)
+	require.True(t, result.RemovedStore)
+	require.True(t, result.RemovedParallelToolCall)
+	require.Greater(t, result.RemovedToolItems, 0)
+	require.Greater(t, result.RemovedHistoryItems, 0)
 	require.Empty(t, req.PreviousResponseID)
 	require.Nil(t, req.Conversation)
 	require.Nil(t, req.ContextManagement)
 	require.Nil(t, req.PromptCacheKey)
 	require.Nil(t, req.PromptCacheRetention)
+	require.Nil(t, req.Include)
+	require.Nil(t, req.Store)
+	require.Nil(t, req.ParallelToolCalls)
 	require.NotNil(t, req.Reasoning)
 	require.JSONEq(t, `"required"`, string(req.ToolChoice))
 	require.NotNil(t, req.Tools)
 	require.JSONEq(t, `"be terse"`, string(req.Instructions))
 	var input []map[string]any
 	require.NoError(t, common.Unmarshal(req.Input, &input))
-	require.Len(t, input, 1)
+	require.Len(t, input, 4)
+	require.Equal(t, "developer", input[0]["role"])
+	require.Equal(t, "assistant", input[1]["role"])
 	require.Equal(t, "message", input[0]["type"])
-	require.Equal(t, "user", input[0]["role"])
-	content := input[0]["content"].([]any)
+	content := input[1]["content"].([]any)
 	require.Len(t, content, 2)
+	lastContent := input[3]["content"].([]any)
+	require.Len(t, lastContent, 1)
 	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatApplied))
-	require.Equal(t, ResponsesCompatProfileStatelessV1, common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatProfile))
+	require.Equal(t, ResponsesCompatProfileStatelessV2Antigravity, common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatProfile))
 	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatNormalizedInput))
+	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatIncludeDropped))
 }
 
 func TestApplyResponsesCompatibilityProfileCompact54(t *testing.T) {
@@ -102,13 +124,13 @@ func TestApplyResponsesCompatibilityProfileCompact54(t *testing.T) {
 
 	result := ApplyResponsesCompatibilityProfile(nil, relayconstant.RelayModeResponsesCompact, constant.ChannelTypeAntigravity, "gpt-5.4-openai-compact", req)
 	require.True(t, result.Applied)
-	require.Equal(t, ResponsesCompatProfileStatelessV1, result.Profile)
+	require.Equal(t, ResponsesCompatProfileStatelessV2Antigravity, result.Profile)
 	require.Empty(t, req.PreviousResponseID)
 	require.Nil(t, req.Conversation)
 	require.JSONEq(t, `"sum up"`, string(req.Instructions))
 }
 
-func TestApplyResponsesCompatibilityProfileSkips55(t *testing.T) {
+func TestApplyResponsesCompatibilityProfileSkips55ForNonAntigravity(t *testing.T) {
 	req := &dto.OpenAIResponsesRequest{
 		Model:              "gpt-5.5",
 		Input:              mustMarshalCompatRaw("hello"),
@@ -116,7 +138,7 @@ func TestApplyResponsesCompatibilityProfileSkips55(t *testing.T) {
 		Conversation:       mustMarshalCompatRaw(map[string]any{"id": "conv_keep"}),
 	}
 
-	result := ApplyResponsesCompatibilityProfile(nil, relayconstant.RelayModeResponses, constant.ChannelTypeAntigravity, "gpt-5.5", req)
+	result := ApplyResponsesCompatibilityProfile(nil, relayconstant.RelayModeResponses, constant.ChannelTypeOpenAI, "gpt-5.5", req)
 	require.False(t, result.Applied)
 	require.Equal(t, "resp_keep", req.PreviousResponseID)
 	require.NotNil(t, req.Conversation)
@@ -140,27 +162,40 @@ func TestGenerateTextOtherInfoIncludesResponsesCompatibility(t *testing.T) {
 	ctx, _ := gin.CreateTestContext(rec)
 	ctx.Request = httptest.NewRequest("POST", "/v1/responses", nil)
 	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatApplied, true)
-	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatProfile, ResponsesCompatProfileStatelessV1)
+	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatProfile, ResponsesCompatProfileStatelessV2Antigravity)
 	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatMode, "stateless")
-	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatRemovedFields, []string{"previous_response_id", "input.stateful_history"})
-	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatOriginModel, "gpt-5.4")
+	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatRemovedFields, []string{"previous_response_id", "input.stateful_history", "include"})
+	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatOriginModel, "gpt-5.5")
 	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatChannelType, constant.ChannelTypeAntigravity)
 	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatNormalizedInput, true)
+	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatRemovedToolItems, 2)
+	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatRemovedHistoryItems, 3)
+	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatIncludeDropped, true)
+	common.SetContextKey(ctx, constant.ContextKeyChannelType, constant.ChannelTypeAntigravity)
 
 	now := time.Now()
 	info := &relaycommon.RelayInfo{
 		StartTime:         now,
 		FirstResponseTime: now,
 		ChannelMeta:       &relaycommon.ChannelMeta{},
+		RelayMode:         relayconstant.RelayModeResponses,
 	}
+	info.UpstreamModelName = "gemini-3-flash"
 	other := GenerateTextOtherInfo(ctx, info, 1, 1, 1, 0, 0, 0, 0)
 	require.Equal(t, true, other["responses_compat_applied"])
-	require.Equal(t, ResponsesCompatProfileStatelessV1, other["responses_compat_profile"])
+	require.Equal(t, ResponsesCompatProfileStatelessV2Antigravity, other["responses_compat_profile"])
 	require.Equal(t, "stateless", other["responses_compat_mode"])
-	require.Equal(t, "gpt-5.4", other["responses_compat_origin_model"])
+	require.Equal(t, "gpt-5.5", other["responses_compat_origin_model"])
 	require.Equal(t, constant.ChannelTypeAntigravity, other["responses_compat_channel_type"])
 	require.Equal(t, true, other["responses_compat_normalized_input"])
-	require.ElementsMatch(t, []string{"previous_response_id", "input.stateful_history"}, other["responses_compat_removed_fields"].([]string))
+	require.Equal(t, 2, other["responses_compat_removed_tool_items"])
+	require.Equal(t, 3, other["responses_compat_removed_history_items"])
+	require.Equal(t, true, other["responses_compat_include_dropped"])
+	require.ElementsMatch(t, []string{"previous_response_id", "input.stateful_history", "include"}, other["responses_compat_removed_fields"].([]string))
+	adminInfo := other["admin_info"].(map[string]interface{})
+	require.Equal(t, "stateless_transcript", adminInfo["antigravity_responses_mode"])
+	require.Equal(t, ResponsesCompatProfileStatelessV2Antigravity, adminInfo["antigravity_responses_profile"])
+	require.Equal(t, "gemini-3-flash", adminInfo["antigravity_responses_upstream_model"])
 }
 
 func mustMarshalCompatRaw(v any) []byte {
