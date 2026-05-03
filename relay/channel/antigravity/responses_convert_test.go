@@ -14,7 +14,7 @@ import (
 
 func TestConvertResponsesRequestToChatRequestFiltersUnsupportedTools(t *testing.T) {
 	req := dto.OpenAIResponsesRequest{
-		Model: "gpt-5.4",
+		Model:        "gpt-5.4",
 		Instructions: mustMarshalRaw("be terse"),
 		Input: mustMarshalRaw([]map[string]any{
 			{
@@ -62,6 +62,72 @@ func TestConvertResponsesRequestToChatRequestFiltersUnsupportedTools(t *testing.
 	require.Equal(t, "tool", chatReq.Messages[2].Role)
 	require.Equal(t, "call_1", chatReq.Messages[2].ToolCallId)
 	require.JSONEq(t, `{"ok":true}`, chatReq.Messages[2].StringContent())
+}
+
+func TestConvertResponsesRequestToChatRequestDropsUnsupportedToolState(t *testing.T) {
+	req := dto.OpenAIResponsesRequest{
+		Model: "gpt-5.4",
+		Input: mustMarshalRaw([]map[string]any{
+			{
+				"type": "message",
+				"role": "assistant",
+				"content": []map[string]any{
+					{
+						"type":      "function_call",
+						"name":      "web_search",
+						"call_id":   "call_bad",
+						"arguments": "{}",
+					},
+				},
+			},
+			{
+				"type":    "function_call_output",
+				"call_id": "call_bad",
+				"output":  "should be dropped",
+			},
+			{
+				"type":      "function_call",
+				"name":      "lookup_weather",
+				"call_id":   "call_good",
+				"arguments": "{\"city\":\"Tokyo\"}",
+			},
+			{
+				"type":    "function_call_output",
+				"call_id": "call_good",
+				"output":  map[string]any{"ok": true},
+			},
+		}),
+		ToolChoice: mustMarshalRaw(map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": "web_search",
+			},
+		}),
+		Tools: mustMarshalRaw([]map[string]any{
+			{
+				"type": "function",
+				"function": map[string]any{
+					"name": "lookup_weather",
+				},
+			},
+			{
+				"type": "web_search",
+			},
+		}),
+	}
+
+	chatReq, filtered, err := convertResponsesRequestToChatRequest(req)
+	require.NoError(t, err)
+	require.Equal(t, []string{"web_search"}, filtered)
+	require.Nil(t, chatReq.ToolChoice)
+	require.Len(t, chatReq.Tools, 1)
+	require.Len(t, chatReq.Messages, 2)
+	require.Equal(t, "assistant", chatReq.Messages[0].Role)
+	require.Len(t, chatReq.Messages[0].ParseToolCalls(), 1)
+	require.Equal(t, "lookup_weather", chatReq.Messages[0].ParseToolCalls()[0].Function.Name)
+	require.Equal(t, "tool", chatReq.Messages[1].Role)
+	require.Equal(t, "call_good", chatReq.Messages[1].ToolCallId)
+	require.JSONEq(t, `{"ok":true}`, chatReq.Messages[1].StringContent())
 }
 
 func TestBuildGeminiRequestFromResponsesIncludesSystemAndFunctionTools(t *testing.T) {
@@ -127,7 +193,7 @@ func TestBuildResponsesResponseFromGeminiProducesMessageAndFunctionCall(t *testi
 						{Text: "hello"},
 						{FunctionCall: &dto.FunctionCall{
 							FunctionName: "lookup_weather",
-							Arguments: map[string]any{"city": "Tokyo"},
+							Arguments:    map[string]any{"city": "Tokyo"},
 						}},
 					},
 				},

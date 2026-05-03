@@ -23,6 +23,11 @@ type responsesInputItem struct {
 	Arguments string          `json:"arguments,omitempty"`
 }
 
+type responsesConversionState struct {
+	allowedToolNames map[string]struct{}
+	allowedCallIDs   map[string]struct{}
+}
+
 func buildGeminiRequestFromResponses(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (*dto.GeminiChatRequest, error) {
 	chatReq, filteredTools, err := convertResponsesRequestToChatRequest(request)
 	if err != nil {
@@ -51,22 +56,32 @@ func convertResponsesRequestToChatRequest(request dto.OpenAIResponsesRequest) (*
 	if request.Reasoning != nil {
 		chatReq.ReasoningEffort = strings.TrimSpace(request.Reasoning.Effort)
 	}
+	state := &responsesConversionState{
+		allowedToolNames: make(map[string]struct{}),
+		allowedCallIDs:   make(map[string]struct{}),
+	}
 
 	if len(request.Tools) > 0 {
 		tools, filtered := filterResponsesTools(request.GetToolsMap())
 		chatReq.Tools = tools
+		for _, tool := range tools {
+			name := strings.TrimSpace(tool.Function.Name)
+			if name != "" {
+				state.allowedToolNames[name] = struct{}{}
+			}
+		}
 		if len(tools) > 0 {
-			if toolChoice, ok := normalizeResponsesToolChoice(request.ToolChoice); ok {
+			if toolChoice, ok := normalizeResponsesToolChoice(request.ToolChoice, state.allowedToolNames); ok {
 				chatReq.ToolChoice = toolChoice
 			}
-			return populateResponsesMessages(chatReq, request, filtered)
+			return populateResponsesMessages(chatReq, request, filtered, state)
 		}
-		return populateResponsesMessages(chatReq, request, filtered)
+		return populateResponsesMessages(chatReq, request, filtered, state)
 	}
-	return populateResponsesMessages(chatReq, request, nil)
+	return populateResponsesMessages(chatReq, request, nil, state)
 }
 
-func populateResponsesMessages(chatReq *dto.GeneralOpenAIRequest, request dto.OpenAIResponsesRequest, filtered []string) (*dto.GeneralOpenAIRequest, []string, error) {
+func populateResponsesMessages(chatReq *dto.GeneralOpenAIRequest, request dto.OpenAIResponsesRequest, filtered []string, state *responsesConversionState) (*dto.GeneralOpenAIRequest, []string, error) {
 	if len(request.Instructions) > 0 {
 		var instructions string
 		if err := common.Unmarshal(request.Instructions, &instructions); err == nil {
@@ -83,10 +98,11 @@ func populateResponsesMessages(chatReq *dto.GeneralOpenAIRequest, request dto.Op
 	if err != nil {
 		return nil, filtered, err
 	}
+	seedAllowedCallIDs(inputs, state)
 	for _, item := range inputs {
 		switch item.Type {
 		case "", "message":
-			msg, err := mapResponsesMessageItem(item)
+			msg, err := mapResponsesMessageItem(item, state)
 			if err != nil {
 				return nil, filtered, err
 			}
@@ -94,10 +110,12 @@ func populateResponsesMessages(chatReq *dto.GeneralOpenAIRequest, request dto.Op
 				chatReq.Messages = append(chatReq.Messages, *msg)
 			}
 		case "function_call_output":
-			msg := mapResponsesFunctionOutputItem(item)
-			chatReq.Messages = append(chatReq.Messages, msg)
+			msg := mapResponsesFunctionOutputItem(item, state)
+			if msg != nil {
+				chatReq.Messages = append(chatReq.Messages, *msg)
+			}
 		case "function_call":
-			msg, err := mapResponsesFunctionCallItem(item)
+			msg, err := mapResponsesFunctionCallItem(item, state)
 			if err != nil {
 				return nil, filtered, err
 			}
@@ -114,6 +132,40 @@ func populateResponsesMessages(chatReq *dto.GeneralOpenAIRequest, request dto.Op
 		}
 	}
 	return chatReq, filtered, nil
+}
+
+func seedAllowedCallIDs(inputs []responsesInputItem, state *responsesConversionState) {
+	if state == nil || len(state.allowedToolNames) == 0 {
+		return
+	}
+	for _, item := range inputs {
+		switch item.Type {
+		case "function_call":
+			name := strings.TrimSpace(item.Name)
+			callID := strings.TrimSpace(item.CallID)
+			if name != "" && callID != "" && state.isAllowedToolName(name) {
+				state.allowedCallIDs[callID] = struct{}{}
+			}
+		case "", "message":
+			if len(item.Content) == 0 || common.GetJsonType(item.Content) != "array" {
+				continue
+			}
+			var parts []map[string]any
+			if err := common.Unmarshal(item.Content, &parts); err != nil {
+				continue
+			}
+			for _, part := range parts {
+				if strings.TrimSpace(common.Interface2String(part["type"])) != "function_call" {
+					continue
+				}
+				name := strings.TrimSpace(common.Interface2String(part["name"]))
+				callID := strings.TrimSpace(common.Interface2String(part["call_id"]))
+				if name != "" && callID != "" && state.isAllowedToolName(name) {
+					state.allowedCallIDs[callID] = struct{}{}
+				}
+			}
+		}
+	}
 }
 
 func filterResponsesTools(input []map[string]any) ([]dto.ToolCallRequest, []string) {
@@ -149,7 +201,7 @@ func filterResponsesTools(input []map[string]any) ([]dto.ToolCallRequest, []stri
 	return tools, filtered
 }
 
-func normalizeResponsesToolChoice(raw json.RawMessage) (any, bool) {
+func normalizeResponsesToolChoice(raw json.RawMessage, allowedToolNames map[string]struct{}) (any, bool) {
 	if len(raw) == 0 {
 		return nil, false
 	}
@@ -175,6 +227,16 @@ func normalizeResponsesToolChoice(raw json.RawMessage) (any, bool) {
 		toolType := strings.TrimSpace(common.Interface2String(m["type"]))
 		if toolType != "function" {
 			return nil, false
+		}
+		fnMap, _ := m["function"].(map[string]any)
+		name := strings.TrimSpace(common.Interface2String(fnMap["name"]))
+		if name == "" {
+			return nil, false
+		}
+		if len(allowedToolNames) > 0 {
+			if _, ok := allowedToolNames[name]; !ok {
+				return nil, false
+			}
 		}
 		return m, true
 	default:
@@ -204,7 +266,7 @@ func parseResponsesInputItems(raw json.RawMessage) ([]responsesInputItem, error)
 	}
 }
 
-func mapResponsesMessageItem(item responsesInputItem) (*dto.Message, error) {
+func mapResponsesMessageItem(item responsesInputItem, state *responsesConversionState) (*dto.Message, error) {
 	role := strings.TrimSpace(item.Role)
 	if role == "" {
 		role = "user"
@@ -252,10 +314,14 @@ func mapResponsesMessageItem(item responsesInputItem) (*dto.Message, error) {
 			if name == "" {
 				continue
 			}
+			if !state.isAllowedToolName(name) {
+				continue
+			}
 			callID := strings.TrimSpace(common.Interface2String(part["call_id"]))
 			if callID == "" {
 				callID = "call_" + common.GetUUID()
 			}
+			state.allowedCallIDs[callID] = struct{}{}
 			toolCalls = append(toolCalls, dto.ToolCallResponse{
 				ID:   callID,
 				Type: "function",
@@ -278,31 +344,45 @@ func mapResponsesMessageItem(item responsesInputItem) (*dto.Message, error) {
 	if len(toolCalls) > 0 {
 		msg.SetToolCalls(toolCalls)
 	}
+	if len(toolCalls) == 0 && isEmptyMessageContent(msg.Content) {
+		return nil, nil
+	}
 	return msg, nil
 }
 
-func mapResponsesFunctionOutputItem(item responsesInputItem) dto.Message {
+func mapResponsesFunctionOutputItem(item responsesInputItem, state *responsesConversionState) *dto.Message {
 	output := item.OutputString()
 	callID := strings.TrimSpace(item.CallID)
 	if callID == "" {
-		callID = "call_" + common.GetUUID()
+		return nil
 	}
-	return dto.Message{
+	if state != nil {
+		if len(state.allowedCallIDs) > 0 {
+			if _, ok := state.allowedCallIDs[callID]; !ok {
+				return nil
+			}
+		}
+	}
+	return &dto.Message{
 		Role:       "tool",
 		Content:    output,
 		ToolCallId: callID,
 	}
 }
 
-func mapResponsesFunctionCallItem(item responsesInputItem) (*dto.Message, error) {
+func mapResponsesFunctionCallItem(item responsesInputItem, state *responsesConversionState) (*dto.Message, error) {
 	name := strings.TrimSpace(item.Name)
 	if name == "" {
+		return nil, nil
+	}
+	if !state.isAllowedToolName(name) {
 		return nil, nil
 	}
 	callID := strings.TrimSpace(item.CallID)
 	if callID == "" {
 		callID = "call_" + common.GetUUID()
 	}
+	state.allowedCallIDs[callID] = struct{}{}
 	msg := &dto.Message{Role: "assistant", Content: ""}
 	msg.SetToolCalls([]dto.ToolCallResponse{{
 		ID:   callID,
@@ -367,5 +447,33 @@ func (i responsesInputItem) OutputString() string {
 			return fmt.Sprintf("%v", v)
 		}
 		return string(data)
+	}
+}
+
+func (s *responsesConversionState) isAllowedToolName(name string) bool {
+	if s == nil {
+		return true
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if len(s.allowedToolNames) == 0 {
+		return false
+	}
+	_, ok := s.allowedToolNames[name]
+	return ok
+}
+
+func isEmptyMessageContent(content any) bool {
+	switch v := content.(type) {
+	case nil:
+		return true
+	case string:
+		return strings.TrimSpace(v) == ""
+	case []dto.MediaContent:
+		return len(v) == 0
+	default:
+		return false
 	}
 }
