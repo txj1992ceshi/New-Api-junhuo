@@ -3466,16 +3466,6 @@ const EditChannelModal = (props) => {
                                 showClear
                               />
 
-                              <AntigravityOAuthModal
-                                visible={antigravityOAuthModalVisible}
-                                channelId={channelId}
-                                isEdit={isEdit}
-                                onCancel={() =>
-                                  setAntigravityOAuthModalVisible(false)
-                                }
-                                onSuccess={handleAntigravityOAuthGenerated}
-                                onSaved={handleAntigravityOAuthSaved}
-                              />
                             </>
                           ) : inputs.type === 41 &&
                             (inputs.vertex_key_type || 'json') === 'json' ? (
@@ -4662,6 +4652,15 @@ const EditChannelModal = (props) => {
           }
           showSuccess(t('模型列表已追加更新'));
         }}
+      />
+
+      <AntigravityOAuthModal
+        visible={antigravityOAuthModalVisible}
+        channelId={channelId}
+        isEdit={isEdit}
+        onCancel={() => setAntigravityOAuthModalVisible(false)}
+        onSuccess={handleAntigravityOAuthGenerated}
+        onSaved={handleAntigravityOAuthSaved}
       />
     </>
   );
