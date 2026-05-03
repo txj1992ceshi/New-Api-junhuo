@@ -107,6 +107,8 @@ func Distribute() func(c *gin.Context) {
 								abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
 								return
 							}
+						} else if !service.ChannelSupportsRequestedModelForRelay(preferred, relayconstant.Path2RelayMode(c.Request.URL.Path), modelRequest.Model) {
+							preferred = nil
 						} else if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							autoGroups := service.GetUserAutoGroup(userGroup)
@@ -347,6 +349,15 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	if channel == nil {
 		return types.NewError(errors.New("channel is nil"), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
+	relayMode := relayconstant.Path2RelayMode(c.Request.URL.Path)
+	if !service.ChannelSupportsRequestedModelForRelay(channel, relayMode, modelName) {
+		return types.NewErrorWithStatusCode(
+			fmt.Errorf("model %s is not available for %s on channel #%d", modelName, c.Request.URL.Path, channel.Id),
+			types.ErrorCodeModelNotFound,
+			http.StatusServiceUnavailable,
+			types.ErrOptionWithSkipRetry(),
+		)
+	}
 	common.SetContextKey(c, constant.ContextKeyChannelId, channel.Id)
 	common.SetContextKey(c, constant.ContextKeyChannelName, channel.Name)
 	common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
@@ -364,8 +375,15 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		common.SetContextKey(c, constant.ContextKeyChannelOrganization, *channel.OpenAIOrganization)
 	}
 	common.SetContextKey(c, constant.ContextKeyChannelAutoBan, channel.GetAutoBan())
-	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
+	responsesModelMapping := service.GetResponsesModelMapping(channel, relayconstant.Path2RelayMode(c.Request.URL.Path))
+	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, service.MergeChannelModelMappings(channel.GetModelMapping(), responsesModelMapping))
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
+	common.SetContextKey(c, constant.ContextKeyResponsesModelMappingApplied, false)
+	if len(responsesModelMapping) > 0 {
+		if _, ok := responsesModelMapping[modelName]; ok {
+			common.SetContextKey(c, constant.ContextKeyResponsesModelMappingApplied, true)
+		}
+	}
 
 	var (
 		key   string

@@ -20,9 +20,9 @@ func ModelMappedHelper(c *gin.Context, info *common.RelayInfo, request dto.Reque
 
 	isResponsesCompact := info.RelayMode == relayconstant.RelayModeResponsesCompact
 	originModelName := info.OriginModelName
-	mappingModelName := originModelName
+	baseModelName := originModelName
 	if isResponsesCompact && strings.HasSuffix(originModelName, ratio_setting.CompactModelSuffix) {
-		mappingModelName = strings.TrimSuffix(originModelName, ratio_setting.CompactModelSuffix)
+		baseModelName = strings.TrimSuffix(originModelName, ratio_setting.CompactModelSuffix)
 	}
 
 	// map model name
@@ -34,47 +34,52 @@ func ModelMappedHelper(c *gin.Context, info *common.RelayInfo, request dto.Reque
 			return fmt.Errorf("unmarshal_model_mapping_failed")
 		}
 
-		// 支持链式模型重定向，最终使用链尾的模型
-		currentModel := mappingModelName
-		visitedModels := map[string]bool{
-			currentModel: true,
-		}
-		for {
-			if mappedModel, exists := modelMap[currentModel]; exists && mappedModel != "" {
-				// 模型重定向循环检测，避免无限循环
-				if visitedModels[mappedModel] {
-					if mappedModel == currentModel {
-						if currentModel == info.OriginModelName {
-							info.IsModelMapped = false
-							return nil
-						} else {
-							info.IsModelMapped = true
-							break
-						}
-					}
-					return errors.New("model_mapping_contains_cycle")
-				}
-				visitedModels[mappedModel] = true
-				currentModel = mappedModel
-				info.IsModelMapped = true
-			} else {
-				break
+		mappingModelName := originModelName
+		if isResponsesCompact {
+			if _, exists := modelMap[originModelName]; !exists {
+				mappingModelName = baseModelName
 			}
 		}
+
+		// 支持链式模型重定向，最终使用链尾的模型
+		currentModel := mappingModelName
+		visitedModels := map[string]bool{currentModel: true}
+		for {
+			mappedModel, exists := modelMap[currentModel]
+			if !exists || mappedModel == "" {
+				break
+			}
+			if visitedModels[mappedModel] {
+				if mappedModel == currentModel {
+					if currentModel == mappingModelName {
+						info.IsModelMapped = false
+						return nil
+					}
+					info.IsModelMapped = true
+					break
+				}
+				return errors.New("model_mapping_contains_cycle")
+			}
+			visitedModels[mappedModel] = true
+			currentModel = mappedModel
+			info.IsModelMapped = true
+		}
 		if info.IsModelMapped {
+			if isResponsesCompact &&
+				!strings.HasSuffix(currentModel, ratio_setting.CompactModelSuffix) &&
+				mappingModelName == baseModelName {
+				currentModel = ratio_setting.WithCompactModelSuffix(currentModel)
+			}
 			info.UpstreamModelName = currentModel
 		}
 	}
 
 	if isResponsesCompact {
-		finalUpstreamModelName := mappingModelName
-		if info.IsModelMapped && info.UpstreamModelName != "" {
-			finalUpstreamModelName = info.UpstreamModelName
+		if info.UpstreamModelName == "" {
+			info.UpstreamModelName = originModelName
 		}
-		info.UpstreamModelName = finalUpstreamModelName
-		info.OriginModelName = ratio_setting.WithCompactModelSuffix(finalUpstreamModelName)
 	}
-	if request != nil {
+	if request != nil && info.UpstreamModelName != "" {
 		request.SetModelName(info.UpstreamModelName)
 	}
 	return nil
