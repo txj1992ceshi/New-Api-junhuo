@@ -1312,6 +1312,41 @@ const EditChannelModal = (props) => {
     formatJsonField('key');
   };
 
+  const refreshAntigravityCredentialState = async () => {
+    const res = await API.get(`/api/channel/${channelId}`, {
+      skipErrorHandler: true,
+    });
+    if (!res?.data?.success) {
+      throw new Error(res?.data?.message || 'Failed to reload channel');
+    }
+
+    const channel = res.data.data || {};
+    const keyValue = channel.key ?? '';
+    const channelInfo = channel.channel_info || {};
+    const isMulti = channelInfo.is_multi_key === true;
+
+    setInputs((prev) => ({
+      ...prev,
+      key: keyValue,
+    }));
+
+    if (formApiRef.current) {
+      formApiRef.current.setValue('key', keyValue);
+    }
+
+    setIsMultiKeyChannel(isMulti);
+    if (isMulti) {
+      setBatch(true);
+      setMultiToSingle(true);
+      setMultiKeyMode(channelInfo.multi_key_mode || 'random');
+    }
+  };
+
+  const handleAntigravityOAuthSaved = async () => {
+    if (!isEdit || !channelId) return;
+    await refreshAntigravityCredentialState();
+  };
+
   const handleRefreshAntigravityCredential = async () => {
     if (!isEdit) return;
 
@@ -3422,10 +3457,13 @@ const EditChannelModal = (props) => {
 
                               <AntigravityOAuthModal
                                 visible={antigravityOAuthModalVisible}
+                                channelId={channelId}
+                                isEdit={isEdit}
                                 onCancel={() =>
                                   setAntigravityOAuthModalVisible(false)
                                 }
                                 onSuccess={handleAntigravityOAuthGenerated}
+                                onSaved={handleAntigravityOAuthSaved}
                               />
                             </>
                           ) : inputs.type === 41 &&
