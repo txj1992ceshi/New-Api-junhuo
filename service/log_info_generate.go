@@ -55,6 +55,27 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 			other["upstream_model_name"] = relayInfo.UpstreamModelName
 		}
 	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatApplied) {
+		other["responses_compat_applied"] = true
+		if profile := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatProfile); profile != "" {
+			other["responses_compat_profile"] = profile
+		}
+		if mode := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatMode); mode != "" {
+			other["responses_compat_mode"] = mode
+		}
+		if fields := common.GetContextKeyStringSlice(ctx, constant.ContextKeyResponsesCompatRemovedFields); len(fields) > 0 {
+			other["responses_compat_removed_fields"] = fields
+		}
+		if originModel := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatOriginModel); originModel != "" {
+			other["responses_compat_origin_model"] = originModel
+		}
+		if channelType := common.GetContextKeyInt(ctx, constant.ContextKeyResponsesCompatChannelType); channelType != 0 {
+			other["responses_compat_channel_type"] = channelType
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatNormalizedInput) {
+			other["responses_compat_normalized_input"] = true
+		}
+	}
 	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateSanitized) {
 		other["responses_state_sanitized"] = true
 		if fields := common.GetContextKeyStringSlice(ctx, constant.ContextKeyResponsesStateSanitizedFields); len(fields) > 0 {

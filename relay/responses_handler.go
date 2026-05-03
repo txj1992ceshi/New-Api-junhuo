@@ -95,9 +95,9 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	if err != nil {
 		return types.NewError(fmt.Errorf("failed to copy request to GeneralOpenAIRequest: %w", err), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 	}
-	sanitizeResult := service.SanitizeResponsesRequestForModel(c, info.RelayMode, request)
-	if sanitizeResult.Applied {
-		service.LogResponsesStateSanitized(c, info, sanitizeResult)
+	compatResult := service.ApplyResponsesCompatibilityProfile(c, info.RelayMode, info.ChannelType, info.OriginModelName, request)
+	if compatResult.Applied {
+		service.LogResponsesCompatibilityApplied(c, info, compatResult)
 	}
 
 	err = helper.ModelMappedHelper(c, info, request)
