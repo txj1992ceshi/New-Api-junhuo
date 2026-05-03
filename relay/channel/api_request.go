@@ -1,7 +1,6 @@
 package channel
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -269,6 +268,7 @@ func processHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 
 		headerOverride[key] = value
 	}
+	filterHeaderOverrideForChannel(info, headerOverride)
 	return headerOverride, nil
 }
 
@@ -297,11 +297,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	if common2.DebugEnabled {
 		println("fullRequestURL:", fullRequestURL)
 	}
-	finalRequestBody, capturedBody, err := prepareAntigravityCapturedBody(info, requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("prepare antigravity captured body failed: %w", err)
-	}
-	req, err := http.NewRequest(c.Request.Method, fullRequestURL, finalRequestBody)
+	req, err := http.NewRequest(c.Request.Method, fullRequestURL, requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("new request failed: %w", err)
 	}
@@ -317,7 +313,6 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
-	logAntigravityFinalUpstreamRequest(c, info, req, fullRequestURL, capturedBody)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
@@ -325,50 +320,12 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	return resp, nil
 }
 
-func prepareAntigravityCapturedBody(info *common.RelayInfo, requestBody io.Reader) (io.Reader, []byte, error) {
-	if info == nil || info.ChannelType != channelconstant.ChannelTypeAntigravity || requestBody == nil {
-		return requestBody, nil, nil
-	}
-	bodyBytes, err := io.ReadAll(requestBody)
-	if err != nil {
-		return nil, nil, err
-	}
-	return bytes.NewReader(bodyBytes), bodyBytes, nil
-}
-
-func logAntigravityFinalUpstreamRequest(c *gin.Context, info *common.RelayInfo, req *http.Request, fullRequestURL string, body []byte) {
-	if info == nil || info.ChannelType != channelconstant.ChannelTypeAntigravity || req == nil {
+func filterHeaderOverrideForChannel(info *common.RelayInfo, headerOverride map[string]string) {
+	if info == nil || len(headerOverride) == 0 {
 		return
 	}
-
-	headers := make(map[string][]string, len(req.Header))
-	for key, values := range req.Header {
-		copied := append([]string(nil), values...)
-		if strings.EqualFold(key, "Authorization") {
-			copied = []string{"Bearer [redacted]"}
-		}
-		headers[key] = copied
-	}
-
-	payload := map[string]any{
-		"kind":              "antigravity_final_upstream_request",
-		"channel_id":        info.ChannelId,
-		"source_path":       c.Request.URL.Path,
-		"request_url_path":  info.RequestURLPath,
-		"relay_mode":        info.RelayMode,
-		"origin_model":      info.OriginModelName,
-		"upstream_model":    info.UpstreamModelName,
-		"is_stream":         info.IsStream,
-		"method":            req.Method,
-		"url":               fullRequestURL,
-		"headers":           headers,
-		"content_length":    req.ContentLength,
-		"body":              string(body),
-		"channel_key_index": info.ChannelMultiKeyIndex,
-	}
-
-	if payloadBytes, err := common2.Marshal(payload); err == nil {
-		logger.LogInfo(c, string(payloadBytes))
+	if info.ChannelType == channelconstant.ChannelTypeAntigravity {
+		delete(headerOverride, "user-agent")
 	}
 }
 
