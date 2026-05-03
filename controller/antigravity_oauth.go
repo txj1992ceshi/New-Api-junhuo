@@ -184,7 +184,16 @@ func completeAntigravityOAuthWithChannelID(c *gin.Context, channelID int) {
 	_ = session.Save()
 
 	if channelID > 0 {
-		if err := model.DB.Model(&model.Channel{}).Where("id = ?", channelID).Update("key", string(encoded)).Error; err != nil {
+		ch, err := model.GetChannelById(channelID, true)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if ch == nil {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "channel not found"})
+			return
+		}
+		if err := service.UpsertAntigravityOAuthKeyToChannel(ch, string(encoded), &key); err != nil {
 			common.ApiError(c, err)
 			return
 		}

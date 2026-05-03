@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -428,7 +429,7 @@ func ScrubCodexChannelKeys(channelID int, now time.Time) (*codexKeyScrubStats, e
 			}
 			stats.RateLimitDead++
 		}
-		if nextMeta != meta {
+		if !reflect.DeepEqual(nextMeta, meta) {
 			channel.SetKeyMeta(i, nextMeta)
 			updated = true
 		}

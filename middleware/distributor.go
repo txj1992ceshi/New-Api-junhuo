@@ -399,6 +399,16 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		}
 		key = selection.Key
 		index = selection.KeyIndex
+	} else if channel.Type == constant.ChannelTypeAntigravity && channel.ChannelInfo.IsMultiKey {
+		selection, selErr := service.SelectAntigravityKey(channel, relayMode, modelName, nil, time.Now())
+		if selErr != nil {
+			return selErr
+		}
+		if selection == nil {
+			return types.NewError(errors.New("no available antigravity key"), types.ErrorCodeChannelNoAvailableKey)
+		}
+		key = selection.Key
+		index = selection.KeyIndex
 	} else {
 		var newAPIError *types.NewAPIError
 		key, index, newAPIError = channel.GetNextEnabledKey()
@@ -412,6 +422,16 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		_ = index
 	}
 	if channel.ChannelInfo.IsMultiKey {
+		if channel.Type == constant.ChannelTypeAntigravity {
+			common.SetContextKey(c, constant.ContextKeyAntigravityAccountSwitched, false)
+		}
+		if channel.Type == constant.ChannelTypeAntigravity {
+			if previousMultiKey, exists := common.GetContextKey(c, constant.ContextKeyChannelMultiKeyIndex); exists {
+				if previousIndex, ok := previousMultiKey.(int); ok && previousIndex != index {
+					common.SetContextKey(c, constant.ContextKeyAntigravityAccountSwitched, true)
+				}
+			}
+		}
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
 		common.SetContextKey(c, constant.ContextKeyChannelMultiKeyIndex, index)
 	} else {
@@ -435,6 +455,11 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 			meta := channel.ChannelInfo.MultiKeyMeta[index]
 			common.SetContextKey(c, constant.ContextKeyCodexKeyState, string(meta.State))
 		}
+	} else if channel.Type == constant.ChannelTypeAntigravity && channel.ChannelInfo.MultiKeyMeta != nil {
+		meta := channel.ChannelInfo.MultiKeyMeta[index]
+		common.SetContextKey(c, constant.ContextKeyAntigravityEmail, meta.Email)
+		common.SetContextKey(c, constant.ContextKeyAntigravityEffectiveProjectID, meta.EffectiveProjectID)
+		common.SetContextKey(c, constant.ContextKeyAntigravityKeyState, string(meta.State))
 	}
 
 	common.SetContextKey(c, constant.ContextKeySystemPromptOverride, false)

@@ -99,6 +99,24 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 		adminInfo["is_multi_key"] = true
 		adminInfo["multi_key_index"] = common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex)
 	}
+	if email := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityEmail); email != "" {
+		adminInfo["antigravity_email"] = email
+	}
+	if projectID := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityEffectiveProjectID); projectID != "" {
+		adminInfo["antigravity_effective_project_id"] = projectID
+	}
+	if state := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityKeyState); state != "" {
+		adminInfo["antigravity_key_state"] = state
+	}
+	if class := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityErrorClass); class != "" {
+		adminInfo["antigravity_error_class"] = class
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityAccountSwitched) {
+		adminInfo["antigravity_account_switched"] = true
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityCredentialRefreshApplied) {
+		adminInfo["antigravity_credential_refresh_applied"] = true
+	}
 
 	isLocalCountTokens := common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens)
 	if isLocalCountTokens {

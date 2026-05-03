@@ -204,10 +204,13 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		return nil, types.NewOpenAIError(errors.New("empty antigravity response"), types.ErrorCodeBadResponse, http.StatusBadGateway)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, a.handleWrappedErrorResponse(resp)
+		apiErr := a.handleWrappedErrorResponse(c, info, resp)
+		return nil, apiErr
 	}
+	a.markSuccess(info)
 	unwrapped, unwrapErr := unwrapAntigravityHTTPResponse(resp)
 	if unwrapErr != nil {
+		a.markFailure(c, info, http.StatusBadGateway, unwrapErr.Error())
 		return nil, types.NewOpenAIError(unwrapErr, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
 	if info != nil {
@@ -241,25 +244,39 @@ func (a *Adaptor) resolveCredential(c *gin.Context, info *relaycommon.RelayInfo)
 	if strings.TrimSpace(key.AccessToken) == "" || key.IsAccessExpired(accessExpiryBuffer) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 12*time.Second)
 		defer cancel()
+		if info.ChannelId > 0 && info.ChannelIsMultiKey {
+			refreshed, _, refreshErr := service.RefreshAntigravityChannelKeyCredential(ctx, info.ChannelId, info.ChannelMultiKeyIndex, false)
+			if refreshErr != nil {
+				a.markFailure(c, info, http.StatusUnauthorized, refreshErr.Error())
+				return nil, refreshErr
+			}
+			common.SetContextKey(c, constant.ContextKeyAntigravityCredentialRefreshApplied, true)
+			info.ApiKey = mustJSON(refreshed)
+			return refreshed, nil
+		}
 		if info.ChannelId > 0 {
 			refreshed, _, refreshErr := service.RefreshAntigravityChannelCredential(ctx, info.ChannelId, service.AntigravityCredentialRefreshOptions{ResetCaches: false})
 			if refreshErr != nil {
+				a.markFailure(c, info, http.StatusUnauthorized, refreshErr.Error())
 				return nil, refreshErr
 			}
+			common.SetContextKey(c, constant.ContextKeyAntigravityCredentialRefreshApplied, true)
 			info.ApiKey = mustJSON(refreshed)
 			return refreshed, nil
 		}
 		refreshed, refreshErr := service.RefreshAntigravityCredentialWithProxy(ctx, info.ApiKey, info.ChannelSetting.Proxy)
 		if refreshErr != nil {
+			a.markFailure(c, info, http.StatusUnauthorized, refreshErr.Error())
 			return nil, refreshErr
 		}
+		common.SetContextKey(c, constant.ContextKeyAntigravityCredentialRefreshApplied, true)
 		info.ApiKey = mustJSON(refreshed)
 		return refreshed, nil
 	}
 	return key, nil
 }
 
-func (a *Adaptor) handleWrappedErrorResponse(resp *http.Response) *types.NewAPIError {
+func (a *Adaptor) handleWrappedErrorResponse(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) *types.NewAPIError {
 	defer service.CloseResponseBodyGracefully(resp)
 	body, _ := io.ReadAll(resp.Body)
 	var envelope wrappedResponseEnvelope
@@ -268,9 +285,31 @@ func (a *Adaptor) handleWrappedErrorResponse(resp *http.Response) *types.NewAPIE
 		if msg == "" {
 			msg = http.StatusText(resp.StatusCode)
 		}
+		a.markFailure(c, info, resp.StatusCode, msg)
 		return types.NewOpenAIError(errors.New(msg), types.ErrorCodeBadResponse, resp.StatusCode)
 	}
-	return types.NewOpenAIError(fmt.Errorf("antigravity upstream error: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body))), types.ErrorCodeBadResponse, resp.StatusCode)
+	msg := fmt.Sprintf("antigravity upstream error: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body)))
+	a.markFailure(c, info, resp.StatusCode, msg)
+	return types.NewOpenAIError(errors.New(msg), types.ErrorCodeBadResponse, resp.StatusCode)
+}
+
+func (a *Adaptor) markSuccess(info *relaycommon.RelayInfo) {
+	if info == nil || info.ChannelType != constant.ChannelTypeAntigravity || !info.ChannelIsMultiKey {
+		return
+	}
+	_ = service.MarkAntigravityKeySuccess(info.ChannelId, info.ChannelMultiKeyIndex, time.Now())
+}
+
+func (a *Adaptor) markFailure(c *gin.Context, info *relaycommon.RelayInfo, statusCode int, msg string) {
+	if c != nil {
+		class := string(service.ClassifyAntigravityError(statusCode, msg))
+		common.SetContextKey(c, constant.ContextKeyAntigravityErrorClass, class)
+	}
+	if info == nil || info.ChannelType != constant.ChannelTypeAntigravity || !info.ChannelIsMultiKey {
+		return
+	}
+	class := service.ClassifyAntigravityError(statusCode, msg)
+	_ = service.MarkAntigravityKeyFailure(info.ChannelId, info.ChannelMultiKeyIndex, info.RelayMode, info.OriginModelName, class, time.Now(), msg)
 }
 
 func unwrapAntigravityHTTPResponse(resp *http.Response) (*http.Response, error) {
