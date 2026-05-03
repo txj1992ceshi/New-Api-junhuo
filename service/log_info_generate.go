@@ -55,6 +55,16 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 			other["upstream_model_name"] = relayInfo.UpstreamModelName
 		}
 	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateSanitized) {
+		other["responses_state_sanitized"] = true
+		if fields := common.GetContextKeyStringSlice(ctx, constant.ContextKeyResponsesStateSanitizedFields); len(fields) > 0 {
+			other["responses_state_sanitized_fields"] = fields
+		}
+		other["responses_state_had_previous_response_id"] = common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateHadPreviousResponseID)
+		other["responses_state_had_conversation"] = common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateHadConversation)
+		other["responses_state_had_context_management"] = common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateHadContextManagement)
+		other["responses_state_had_prompt_cache_key"] = common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateHadPromptCacheKey)
+	}
 
 	isSystemPromptOverwritten := common.GetContextKeyBool(ctx, constant.ContextKeySystemPromptOverride)
 	if isSystemPromptOverwritten {
