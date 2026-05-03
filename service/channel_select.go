@@ -12,6 +12,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type retryParamSnapshot struct {
+	retry          *int
+	resetNextTry   bool
+	autoGroupIndex interface{}
+	autoGroupRetry interface{}
+	autoGroup      interface{}
+}
+
 type RetryParam struct {
 	Ctx          *gin.Context
 	TokenGroup   string
@@ -82,13 +90,46 @@ func (p *RetryParam) ResetRetryNextTry() {
 //	Retry=3: GroupB, priority1 (startRetryIndex=2, priorityRetry=1)
 //	         分组B, 优先级1
 func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
+	relayMode := relayconstant.Path2RelayMode(param.Ctx.Request.URL.Path)
+	if intent := GetResponsesRoutingIntentFromContext(param.Ctx, relayMode, param.ModelName); intent.StatefulRequested {
+		snapshot := snapshotRetryParam(param)
+		nativeParam := cloneRetryParam(param)
+		channel, selectGroup, err := cacheGetRandomSatisfiedChannelWithPredicate(nativeParam, func(ch *model.Channel) bool {
+			return ChannelSupportsRequestForRelayCapability(param.Ctx, ch, relayMode, param.ModelName, ResponsesStatefulCapabilityNative)
+		})
+		if err != nil {
+			return nil, selectGroup, err
+		}
+		if channel != nil {
+			return channel, selectGroup, nil
+		}
+		restoreRetryParam(param, snapshot)
+		replayParam := cloneRetryParam(param)
+		channel, selectGroup, err = cacheGetRandomSatisfiedChannelWithPredicate(replayParam, func(ch *model.Channel) bool {
+			return ChannelSupportsRequestForRelayCapability(param.Ctx, ch, relayMode, param.ModelName, ResponsesStatefulCapabilityReplay)
+		})
+		if channel != nil {
+			common.SetContextKey(param.Ctx, constant.ContextKeyResponsesFallbackFromNativeToReplay, true)
+		}
+		return channel, selectGroup, err
+	}
+	return cacheGetRandomSatisfiedChannelWithPredicate(param, nil)
+}
+
+func cacheGetRandomSatisfiedChannelWithPredicate(param *RetryParam, predicate func(*model.Channel) bool) (*model.Channel, string, error) {
 	var channel *model.Channel
 	var err error
 	selectGroup := param.TokenGroup
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
 	relayMode := relayconstant.Path2RelayMode(param.Ctx.Request.URL.Path)
 	channelPredicate := func(ch *model.Channel) bool {
-		return ChannelSupportsRequestedModelForRelay(ch, relayMode, param.ModelName)
+		if !ChannelSupportsRequestForRelay(param.Ctx, ch, relayMode, param.ModelName) {
+			return false
+		}
+		if predicate != nil && !predicate(ch) {
+			return false
+		}
+		return true
 	}
 
 	if param.TokenGroup == "auto" {
@@ -168,4 +209,56 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		}
 	}
 	return channel, selectGroup, nil
+}
+
+func snapshotRetryParam(param *RetryParam) retryParamSnapshot {
+	snapshot := retryParamSnapshot{
+		resetNextTry: param.resetNextTry,
+	}
+	if param.Retry != nil {
+		retry := *param.Retry
+		snapshot.retry = &retry
+	}
+	if param.Ctx != nil {
+		snapshot.autoGroupIndex, _ = param.Ctx.Get(string(constant.ContextKeyAutoGroupIndex))
+		snapshot.autoGroupRetry, _ = param.Ctx.Get(string(constant.ContextKeyAutoGroupRetryIndex))
+		snapshot.autoGroup, _ = param.Ctx.Get(string(constant.ContextKeyAutoGroup))
+	}
+	return snapshot
+}
+
+func restoreRetryParam(param *RetryParam, snapshot retryParamSnapshot) {
+	if snapshot.retry != nil {
+		retry := *snapshot.retry
+		param.Retry = &retry
+	} else {
+		param.Retry = nil
+	}
+	param.resetNextTry = snapshot.resetNextTry
+	if param.Ctx == nil {
+		return
+	}
+	if snapshot.autoGroupIndex != nil {
+		param.Ctx.Set(string(constant.ContextKeyAutoGroupIndex), snapshot.autoGroupIndex)
+	}
+	if snapshot.autoGroupRetry != nil {
+		param.Ctx.Set(string(constant.ContextKeyAutoGroupRetryIndex), snapshot.autoGroupRetry)
+	}
+	if snapshot.autoGroup != nil {
+		param.Ctx.Set(string(constant.ContextKeyAutoGroup), snapshot.autoGroup)
+	}
+}
+
+func cloneRetryParam(param *RetryParam) *RetryParam {
+	cloned := &RetryParam{
+		Ctx:          param.Ctx,
+		TokenGroup:   param.TokenGroup,
+		ModelName:    param.ModelName,
+		resetNextTry: param.resetNextTry,
+	}
+	if param.Retry != nil {
+		retry := *param.Retry
+		cloned.Retry = &retry
+	}
+	return cloned
 }

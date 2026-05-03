@@ -107,7 +107,7 @@ func Distribute() func(c *gin.Context) {
 								abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
 								return
 							}
-						} else if !service.ChannelSupportsRequestedModelForRelay(preferred, relayconstant.Path2RelayMode(c.Request.URL.Path), modelRequest.Model) {
+						} else if !service.ChannelSupportsRequestForRelay(c, preferred, relayconstant.Path2RelayMode(c.Request.URL.Path), modelRequest.Model) {
 							preferred = nil
 						} else if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
@@ -125,6 +125,29 @@ func Distribute() func(c *gin.Context) {
 							channel = preferred
 							selectGroup = usingGroup
 							service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
+						}
+					}
+				}
+
+				if channel == nil {
+					if preferredChannelID, found := service.GetPreferredChannelByResponsesEntity(c, relayconstant.Path2RelayMode(c.Request.URL.Path), modelRequest.Model); found {
+						preferred, err := model.CacheGetChannel(preferredChannelID)
+						if err == nil && preferred != nil && preferred.Status == common.ChannelStatusEnabled && service.ChannelSupportsRequestForRelay(c, preferred, relayconstant.Path2RelayMode(c.Request.URL.Path), modelRequest.Model) {
+							if usingGroup == "auto" {
+								userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+								autoGroups := service.GetUserAutoGroup(userGroup)
+								for _, g := range autoGroups {
+									if model.IsChannelEnabledForGroupModel(g, modelRequest.Model, preferred.Id) {
+										selectGroup = g
+										common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
+										channel = preferred
+										break
+									}
+								}
+							} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
+								channel = preferred
+								selectGroup = usingGroup
+							}
 						}
 					}
 				}
