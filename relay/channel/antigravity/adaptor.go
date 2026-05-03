@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/gemini"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -108,26 +110,7 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if !ok {
 		return nil, errors.New("antigravity channel: failed to convert request to gemini format")
 	}
-	ensureAntigravityThoughtSignatures(geminiRequest)
-
-	key, err := a.resolveCredential(c, info)
-	if err != nil {
-		return nil, err
-	}
-	projectID := key.EffectiveProjectID()
-	if strings.TrimSpace(projectID) == "" {
-		return nil, errors.New("antigravity channel: missing project_id or managed_project_id")
-	}
-	sessionID := "agent-" + common.GetUUID()
-	geminiRequest.SessionID = sessionID
-	return &requestEnvelope{
-		Project:     projectID,
-		Model:       resolvedModel,
-		Request:     geminiRequest,
-		RequestType: "agent",
-		RequestID:   sessionID,
-		UserAgent:   "antigravity",
-	}, nil
+	return a.buildAntigravityEnvelope(c, info, resolvedModel, geminiRequest)
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
@@ -150,17 +133,24 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if info == nil {
 		return nil, errors.New("antigravity channel: missing relay info")
 	}
-	resolvedModel, err := resolveRequestedModel(info.UpstreamModelName)
+	chatReq, filteredTools, err := convertResponsesRequestToChatRequest(request)
 	if err != nil {
 		return nil, err
 	}
-	info.UpstreamModelName = resolvedModel
+	if len(filteredTools) > 0 {
+		logger.LogInfo(c, fmt.Sprintf("antigravity filtered unsupported responses tools: %s", strings.Join(filteredTools, ", ")))
+	}
+	if info.ChannelSetting.SystemPrompt != "" {
+		applyAntigravitySystemPrompt(info, chatReq)
+	}
+	return a.ConvertOpenAIRequest(c, info, chatReq)
+}
 
-	geminiRequest, err := buildGeminiRequestFromResponses(c, info, request)
-	if err != nil {
-		return nil, err
+func (a *Adaptor) buildAntigravityEnvelope(c *gin.Context, info *relaycommon.RelayInfo, resolvedModel string, geminiRequest *dto.GeminiChatRequest) (any, error) {
+	if geminiRequest == nil {
+		return nil, errors.New("antigravity channel: gemini request is nil")
 	}
-	ensureAntigravityThoughtSignatures(geminiRequest)
+	normalizeAntigravityGeminiRequest(geminiRequest)
 
 	key, err := a.resolveCredential(c, info)
 	if err != nil {
@@ -170,7 +160,12 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if strings.TrimSpace(projectID) == "" {
 		return nil, errors.New("antigravity channel: missing project_id or managed_project_id")
 	}
-	sessionID := "agent-" + common.GetUUID()
+
+	sessionID := deriveAntigravitySessionID(geminiRequest, resolvedModel, projectID)
+	if strings.TrimSpace(sessionID) == "" {
+		sessionID = "agent-" + common.GetUUID()
+	}
+	requestID := "agent-" + common.GetUUID()
 	geminiRequest.SessionID = sessionID
 
 	envelope := &requestEnvelope{
@@ -178,10 +173,10 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 		Model:       resolvedModel,
 		Request:     geminiRequest,
 		RequestType: "agent",
-		RequestID:   sessionID,
+		RequestID:   requestID,
 		UserAgent:   "antigravity",
 	}
-	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
+	if info != nil && info.RelayMode == relayconstant.RelayModeResponsesCompact {
 		envelope.RequestType = "compact"
 	}
 	return envelope, nil
@@ -407,6 +402,73 @@ func resolveRequestedModel(requested string) (string, error) {
 func mustJSON(key *service.AntigravityOAuthKey) string {
 	data, _ := json.Marshal(key)
 	return string(data)
+}
+
+func normalizeAntigravityGeminiRequest(request *dto.GeminiChatRequest) {
+	ensureAntigravityThoughtSignatures(request)
+	normalizeAntigravitySystemInstruction(request)
+}
+
+func normalizeAntigravitySystemInstruction(request *dto.GeminiChatRequest) {
+	if request == nil || request.SystemInstructions == nil {
+		return
+	}
+	request.SystemInstructions.Role = "user"
+}
+
+func deriveAntigravitySessionID(request *dto.GeminiChatRequest, model string, projectID string) string {
+	if request == nil {
+		return ""
+	}
+	builder := strings.Builder{}
+	builder.WriteString(strings.ToLower(strings.TrimSpace(model)))
+	builder.WriteString("\n")
+	builder.WriteString(strings.TrimSpace(projectID))
+	builder.WriteString("\n")
+	if request.SystemInstructions != nil {
+		builder.WriteString("system:")
+		builder.WriteString(flattenGeminiContent(request.SystemInstructions))
+		builder.WriteString("\n")
+	}
+	for _, content := range request.Contents {
+		role := strings.ToLower(strings.TrimSpace(content.Role))
+		if role != "user" && role != "model" && role != "assistant" {
+			continue
+		}
+		builder.WriteString(role)
+		builder.WriteString(":")
+		builder.WriteString(flattenGeminiContent(&content))
+		builder.WriteString("\n")
+	}
+	sum := sha256.Sum256([]byte(builder.String()))
+	return "newapi-antigravity:" + fmt.Sprintf("%x", sum[:12])
+}
+
+func flattenGeminiContent(content *dto.GeminiChatContent) string {
+	if content == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(content.Parts))
+	for _, part := range content.Parts {
+		if text := strings.TrimSpace(part.Text); text != "" {
+			parts = append(parts, text)
+			continue
+		}
+		if part.FunctionCall != nil {
+			name := strings.TrimSpace(part.FunctionCall.FunctionName)
+			if name != "" {
+				parts = append(parts, "fn:"+name)
+			}
+			continue
+		}
+		if part.FunctionResponse != nil {
+			name := strings.TrimSpace(part.FunctionResponse.Name)
+			if name != "" {
+				parts = append(parts, "fn_result:"+name)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func ensureAntigravityThoughtSignatures(request *dto.GeminiChatRequest) {

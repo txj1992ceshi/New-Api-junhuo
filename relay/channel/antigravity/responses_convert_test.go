@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -239,4 +242,100 @@ func TestBuildCompactOutputReturnsMessageArray(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, decoded, 1)
 	require.Equal(t, "message", decoded[0]["type"])
+}
+
+func TestNormalizeAntigravitySystemInstructionUsesUserRole(t *testing.T) {
+	req := &dto.GeminiChatRequest{
+		SystemInstructions: &dto.GeminiChatContent{
+			Role: "developer",
+			Parts: []dto.GeminiPart{{
+				Text: "be terse",
+			}},
+		},
+	}
+
+	normalizeAntigravityGeminiRequest(req)
+	require.Equal(t, "user", req.SystemInstructions.Role)
+}
+
+func TestDeriveAntigravitySessionIDIsStable(t *testing.T) {
+	req := &dto.GeminiChatRequest{
+		SystemInstructions: &dto.GeminiChatContent{
+			Role:  "user",
+			Parts: []dto.GeminiPart{{Text: "be terse"}},
+		},
+		Contents: []dto.GeminiChatContent{{
+			Role:  "user",
+			Parts: []dto.GeminiPart{{Text: "hello"}},
+		}},
+	}
+
+	s1 := deriveAntigravitySessionID(req, "gemini-3-flash", "proj-1")
+	s2 := deriveAntigravitySessionID(req, "gemini-3-flash", "proj-1")
+	require.Equal(t, s1, s2)
+	require.Contains(t, s1, "newapi-antigravity:")
+}
+
+func TestConvertOpenAIResponsesRequestReusesChatEnvelopePath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+
+	keyJSON := mustMarshalRaw(map[string]any{
+		"access_token":  "test-access",
+		"refresh_token": "test-refresh",
+		"project_id":    "proj-1",
+		"type":          "antigravity",
+		"expired":       time.Now().Add(2 * time.Hour).Format(time.RFC3339),
+	})
+	info := &relaycommon.RelayInfo{
+		RelayMode:       relayconstant.RelayModeResponses,
+		OriginModelName: "gpt-5.5",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       constant.ChannelTypeAntigravity,
+			UpstreamModelName: "gpt-5.5",
+			ApiKey:            string(keyJSON),
+		},
+	}
+
+	chatReq := &dto.GeneralOpenAIRequest{
+		Model: "gpt-5.5",
+		Messages: []dto.Message{
+			{Role: "developer", Content: "Be concise."},
+			{Role: "user", Content: "Say hello."},
+		},
+		Stream: common.GetPointer(true),
+	}
+	respReq := dto.OpenAIResponsesRequest{
+		Model:        "gpt-5.5",
+		Stream:       common.GetPointer(true),
+		Instructions: mustMarshalRaw("Be concise."),
+		Input: mustMarshalRaw([]map[string]any{
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "Say hello."},
+				},
+			},
+		}),
+	}
+
+	adaptor := &Adaptor{}
+	chatAny, err := adaptor.ConvertOpenAIRequest(ctx, info, chatReq)
+	require.NoError(t, err)
+	respAny, err := adaptor.ConvertOpenAIResponsesRequest(ctx, info, respReq)
+	require.NoError(t, err)
+
+	chatEnvelope := chatAny.(*requestEnvelope)
+	respEnvelope := respAny.(*requestEnvelope)
+	require.Equal(t, chatEnvelope.Project, respEnvelope.Project)
+	require.Equal(t, chatEnvelope.Model, respEnvelope.Model)
+	require.Equal(t, chatEnvelope.RequestType, respEnvelope.RequestType)
+	require.Equal(t, chatEnvelope.UserAgent, respEnvelope.UserAgent)
+	require.Equal(t, chatEnvelope.Request.SessionID, respEnvelope.Request.SessionID)
+	require.Equal(t, "user", respEnvelope.Request.SystemInstructions.Role)
+	require.Equal(t, 1, len(respEnvelope.Request.Contents))
+	require.Equal(t, "Say hello.", respEnvelope.Request.Contents[0].Parts[0].Text)
 }
