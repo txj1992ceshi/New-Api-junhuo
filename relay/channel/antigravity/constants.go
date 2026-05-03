@@ -4,6 +4,17 @@ const (
 	ChannelName = "antigravity"
 )
 
+type antigravityRequestStyle string
+
+const (
+	antigravityRequestStyleNative    antigravityRequestStyle = "antigravity"
+	antigravityRequestStyleGeminiCLI antigravityRequestStyle = "gemini-cli"
+
+	antigravityGeminiCLIUserAgent      = "google-api-nodejs-client/9.15.1"
+	antigravityGeminiCLIApiClient      = "gl-node/22.17.0"
+	antigravityGeminiCLIClientMetadata = "ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI"
+)
+
 var ModelList = []string{
 	"antigravity-gemini-3-pro",
 	"antigravity-gemini-3.1-pro",
@@ -34,4 +45,11 @@ var modelAliasToUpstream = map[string]string{
 	"gpt-5.5-mini":                         "gemini-3-flash",
 	"gpt-5.5-openai-compact":               "gemini-3.1-pro-low",
 	"gpt-5.5-mini-openai-compact":          "gemini-3-flash",
+}
+
+var responsesModelAliasToUpstream = map[string]string{
+	"gpt-5.4":                     "gemini-3-flash-preview",
+	"gpt-5.4-mini":                "gemini-3-flash-preview",
+	"gpt-5.4-openai-compact":      "gemini-3-flash-preview",
+	"gpt-5.4-mini-openai-compact": "gemini-3-flash-preview",
 }

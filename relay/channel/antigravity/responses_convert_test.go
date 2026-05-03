@@ -2,19 +2,21 @@ package antigravity
 
 import (
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
 
 func TestConvertResponsesRequestToChatRequestFiltersUnsupportedTools(t *testing.T) {
 	req := dto.OpenAIResponsesRequest{
-		Model: "gpt-5.4",
+		Model:        "gpt-5.4",
 		Instructions: mustMarshalRaw("be terse"),
 		Input: mustMarshalRaw([]map[string]any{
 			{
@@ -127,7 +129,7 @@ func TestBuildResponsesResponseFromGeminiProducesMessageAndFunctionCall(t *testi
 						{Text: "hello"},
 						{FunctionCall: &dto.FunctionCall{
 							FunctionName: "lookup_weather",
-							Arguments: map[string]any{"city": "Tokyo"},
+							Arguments:    map[string]any{"city": "Tokyo"},
 						}},
 					},
 				},
@@ -173,4 +175,81 @@ func TestBuildCompactOutputReturnsMessageArray(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, decoded, 1)
 	require.Equal(t, "message", decoded[0]["type"])
+}
+
+func TestConvertResponsesRequestToChatRequestClearsToolChoiceWhenToolsFilteredOut(t *testing.T) {
+	req := dto.OpenAIResponsesRequest{
+		Model:      "gpt-5.4",
+		Input:      mustMarshalRaw("hello"),
+		ToolChoice: mustMarshalRaw("required"),
+		Tools: mustMarshalRaw([]map[string]any{
+			{"type": "computer"},
+		}),
+	}
+
+	chatReq, filtered, err := convertResponsesRequestToChatRequest(req)
+	require.NoError(t, err)
+	require.Equal(t, []string{"computer"}, filtered)
+	require.Empty(t, chatReq.Tools)
+	require.Nil(t, chatReq.ToolChoice)
+	require.Len(t, chatReq.Messages, 1)
+	require.Equal(t, "hello", chatReq.Messages[0].StringContent())
+}
+
+func TestResolveRequestedModelUsesGeminiCLIStyleForResponses(t *testing.T) {
+	resolved, err := resolveRequestedModel("gpt-5.4", relayconstant.RelayModeResponses)
+	require.NoError(t, err)
+	require.Equal(t, "gemini-3-flash-preview", resolved.UpstreamModel)
+	require.Equal(t, antigravityRequestStyleGeminiCLI, resolved.RequestStyle)
+	require.Equal(t, "agent", resolved.RequestType)
+
+	chatResolved, err := resolveRequestedModel("gpt-5.4", relayconstant.RelayModeChatCompletions)
+	require.NoError(t, err)
+	require.Equal(t, "gemini-3-flash", chatResolved.UpstreamModel)
+	require.Equal(t, antigravityRequestStyleNative, chatResolved.RequestStyle)
+	require.Equal(t, "agent", chatResolved.RequestType)
+}
+
+func TestApplyRequestEnvelopeStyleOmitsAntigravityFieldsForGeminiCLI(t *testing.T) {
+	envelope := &requestEnvelope{
+		Project:     "proj",
+		Model:       "gemini-3-flash-preview",
+		RequestType: "agent",
+		RequestID:   "agent-123",
+		UserAgent:   "antigravity",
+	}
+
+	applyRequestEnvelopeStyle(envelope, &resolvedAntigravityRequest{
+		UpstreamModel: "gemini-3-flash-preview",
+		RequestStyle:  antigravityRequestStyleGeminiCLI,
+		RequestType:   "agent",
+	}, "agent-123")
+
+	require.Empty(t, envelope.RequestType)
+	require.Empty(t, envelope.RequestID)
+	require.Empty(t, envelope.UserAgent)
+}
+
+func TestSetupRequestHeaderUsesGeminiCLIHeadersForResponses(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ApiKey:            `{"access_token":"test-token","refresh_token":"r","expired":"2099-01-01T00:00:00Z","project_id":"proj"}`,
+			UpstreamModelName: "gpt-5.4",
+		},
+	}
+	info.RelayMode = relayconstant.RelayModeResponses
+
+	header := http.Header{}
+	adaptor := &Adaptor{}
+	err := adaptor.SetupRequestHeader(ctx, &header, info)
+	require.NoError(t, err)
+	require.Equal(t, "Bearer test-token", header.Get("Authorization"))
+	require.Equal(t, antigravityGeminiCLIUserAgent, header.Get("User-Agent"))
+	require.Equal(t, antigravityGeminiCLIApiClient, header.Get("X-Goog-Api-Client"))
+	require.Equal(t, antigravityGeminiCLIClientMetadata, header.Get("Client-Metadata"))
 }

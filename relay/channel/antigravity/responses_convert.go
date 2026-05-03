@@ -61,8 +61,10 @@ func convertResponsesRequestToChatRequest(request dto.OpenAIResponsesRequest) (*
 			}
 			return populateResponsesMessages(chatReq, request, filtered)
 		}
+		chatReq.ToolChoice = nil
 		return populateResponsesMessages(chatReq, request, filtered)
 	}
+	chatReq.ToolChoice = nil
 	return populateResponsesMessages(chatReq, request, nil)
 }
 
@@ -268,6 +270,9 @@ func mapResponsesMessageItem(item responsesInputItem) (*dto.Message, error) {
 	}
 
 	msg := &dto.Message{Role: role}
+	if len(contentParts) == 0 && len(toolCalls) == 0 {
+		return nil, nil
+	}
 	if len(contentParts) == 0 {
 		msg.Content = ""
 	} else if len(contentParts) == 1 && contentParts[0].Type == dto.ContentTypeText {

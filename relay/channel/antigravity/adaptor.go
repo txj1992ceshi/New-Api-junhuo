@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/gemini"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
@@ -53,6 +54,12 @@ const (
 	thoughtSignatureBypassValue = "context_engineering_is_the_way_to_go"
 )
 
+type resolvedAntigravityRequest struct {
+	UpstreamModel string
+	RequestStyle  antigravityRequestStyle
+	RequestType   string
+}
+
 func (a *Adaptor) Init(info *relaycommon.RelayInfo) {}
 
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
@@ -73,6 +80,10 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	if err != nil {
 		return err
 	}
+	resolved, err := resolveRequestedModel(info.UpstreamModelName, info.RelayMode)
+	if err != nil {
+		return err
+	}
 	req.Set("Authorization", "Bearer "+strings.TrimSpace(key.AccessToken))
 	req.Set("Content-Type", "application/json")
 	if info.IsStream {
@@ -80,12 +91,19 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	} else {
 		req.Set("Accept", "application/json")
 	}
-	// Current Antigravity content requests are stricter about client versioning.
-	// Match the installed desktop client's lean content-request header shape:
-	// send only User-Agent, omit extra Google client headers here.
-	req.Set("User-Agent", antigravityContentUserAgent)
-	req.Del("X-Goog-Api-Client")
-	req.Del("Client-Metadata")
+	switch resolved.RequestStyle {
+	case antigravityRequestStyleGeminiCLI:
+		req.Set("User-Agent", antigravityGeminiCLIUserAgent)
+		req.Set("X-Goog-Api-Client", antigravityGeminiCLIApiClient)
+		req.Set("Client-Metadata", antigravityGeminiCLIClientMetadata)
+	default:
+		// Current Antigravity content requests are stricter about client versioning.
+		// Match the installed desktop client's lean content-request header shape:
+		// send only User-Agent, omit extra Google client headers here.
+		req.Set("User-Agent", antigravityContentUserAgent)
+		req.Del("X-Goog-Api-Client")
+		req.Del("Client-Metadata")
+	}
 	return nil
 }
 
@@ -93,11 +111,11 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	if request == nil {
 		return nil, errors.New("antigravity channel: request is nil")
 	}
-	resolvedModel, err := resolveRequestedModel(info.UpstreamModelName)
+	resolved, err := resolveRequestedModel(info.UpstreamModelName, info.RelayMode)
 	if err != nil {
 		return nil, err
 	}
-	info.UpstreamModelName = resolvedModel
+	info.UpstreamModelName = resolved.UpstreamModel
 
 	geminiAdaptor := gemini.Adaptor{}
 	converted, err := geminiAdaptor.ConvertOpenAIRequest(c, info, request)
@@ -120,14 +138,16 @@ func (a *Adaptor) ConvertOpenAIRequest(c *gin.Context, info *relaycommon.RelayIn
 	}
 	sessionID := "agent-" + common.GetUUID()
 	geminiRequest.SessionID = sessionID
-	return &requestEnvelope{
+	envelope := &requestEnvelope{
 		Project:     projectID,
-		Model:       resolvedModel,
+		Model:       resolved.UpstreamModel,
 		Request:     geminiRequest,
 		RequestType: "agent",
 		RequestID:   sessionID,
 		UserAgent:   "antigravity",
-	}, nil
+	}
+	applyRequestEnvelopeStyle(envelope, resolved, sessionID)
+	return envelope, nil
 }
 
 func (a *Adaptor) ConvertRerankRequest(c *gin.Context, relayMode int, request dto.RerankRequest) (any, error) {
@@ -150,11 +170,11 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 	if info == nil {
 		return nil, errors.New("antigravity channel: missing relay info")
 	}
-	resolvedModel, err := resolveRequestedModel(info.UpstreamModelName)
+	resolved, err := resolveRequestedModel(info.UpstreamModelName, info.RelayMode)
 	if err != nil {
 		return nil, err
 	}
-	info.UpstreamModelName = resolvedModel
+	info.UpstreamModelName = resolved.UpstreamModel
 
 	geminiRequest, err := buildGeminiRequestFromResponses(c, info, request)
 	if err != nil {
@@ -175,15 +195,24 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 
 	envelope := &requestEnvelope{
 		Project:     projectID,
-		Model:       resolvedModel,
+		Model:       resolved.UpstreamModel,
 		Request:     geminiRequest,
-		RequestType: "agent",
+		RequestType: resolved.RequestType,
 		RequestID:   sessionID,
 		UserAgent:   "antigravity",
 	}
-	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
-		envelope.RequestType = "compact"
-	}
+	applyRequestEnvelopeStyle(envelope, resolved, sessionID)
+	logger.LogInfo(c, fmt.Sprintf(
+		"antigravity responses request: channel_id=%d relay_mode=%d origin_model=%s upstream_model=%s style=%s request_type=%s tools=%d messages=%d",
+		info.ChannelId,
+		info.RelayMode,
+		strings.TrimSpace(info.OriginModelName),
+		envelope.Model,
+		resolved.RequestStyle,
+		envelope.RequestType,
+		len(geminiRequest.GetTools()),
+		len(geminiRequest.Contents),
+	))
 	return envelope, nil
 }
 
@@ -204,7 +233,7 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		return nil, types.NewOpenAIError(errors.New("empty antigravity response"), types.ErrorCodeBadResponse, http.StatusBadGateway)
 	}
 	if resp.StatusCode >= 400 {
-		return nil, a.handleWrappedErrorResponse(resp)
+		return nil, a.handleWrappedErrorResponse(c, info, resp)
 	}
 	unwrapped, unwrapErr := unwrapAntigravityHTTPResponse(resp)
 	if unwrapErr != nil {
@@ -259,7 +288,7 @@ func (a *Adaptor) resolveCredential(c *gin.Context, info *relaycommon.RelayInfo)
 	return key, nil
 }
 
-func (a *Adaptor) handleWrappedErrorResponse(resp *http.Response) *types.NewAPIError {
+func (a *Adaptor) handleWrappedErrorResponse(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) *types.NewAPIError {
 	defer service.CloseResponseBodyGracefully(resp)
 	body, _ := io.ReadAll(resp.Body)
 	var envelope wrappedResponseEnvelope
@@ -268,9 +297,12 @@ func (a *Adaptor) handleWrappedErrorResponse(resp *http.Response) *types.NewAPIE
 		if msg == "" {
 			msg = http.StatusText(resp.StatusCode)
 		}
+		logAntigravityUpstreamError(c, info, resp.StatusCode, msg)
 		return types.NewOpenAIError(errors.New(msg), types.ErrorCodeBadResponse, resp.StatusCode)
 	}
-	return types.NewOpenAIError(fmt.Errorf("antigravity upstream error: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(body))), types.ErrorCodeBadResponse, resp.StatusCode)
+	bodySummary := strings.TrimSpace(string(body))
+	logAntigravityUpstreamError(c, info, resp.StatusCode, bodySummary)
+	return types.NewOpenAIError(fmt.Errorf("antigravity upstream error: status=%d body=%s", resp.StatusCode, bodySummary), types.ErrorCodeBadResponse, resp.StatusCode)
 }
 
 func unwrapAntigravityHTTPResponse(resp *http.Response) (*http.Response, error) {
@@ -344,25 +376,47 @@ func unwrapAntigravitySSE(body io.ReadCloser) (io.Reader, error) {
 	return pr, nil
 }
 
-func resolveRequestedModel(requested string) (string, error) {
+func resolveRequestedModel(requested string, relayMode int) (*resolvedAntigravityRequest, error) {
 	model := strings.TrimSpace(requested)
 	if model == "" {
-		return "", errors.New("antigravity channel: missing model name")
+		return nil, errors.New("antigravity channel: missing model name")
+	}
+	resolved := &resolvedAntigravityRequest{
+		RequestStyle: antigravityRequestStyleNative,
+		RequestType:  "agent",
+	}
+
+	if relayMode == relayconstant.RelayModeResponses || relayMode == relayconstant.RelayModeResponsesCompact {
+		resolved.RequestStyle = antigravityRequestStyleGeminiCLI
+		if relayMode == relayconstant.RelayModeResponsesCompact {
+			resolved.RequestType = "compact"
+		}
+		if upstream, ok := responsesModelAliasToUpstream[model]; ok {
+			resolved.UpstreamModel = upstream
+			return resolved, nil
+		}
+	}
+
+	if relayMode == relayconstant.RelayModeResponsesCompact {
+		resolved.RequestType = "compact"
 	}
 	if upstream, ok := modelAliasToUpstream[model]; ok {
-		return upstream, nil
+		resolved.UpstreamModel = upstream
+		return resolved, nil
 	}
 	for _, supported := range ModelList {
 		if model == supported {
 			if upstream, ok := modelAliasToUpstream[model]; ok {
-				return upstream, nil
+				resolved.UpstreamModel = upstream
+				return resolved, nil
 			}
 		}
 	}
 	if strings.HasPrefix(model, "gemini-") || strings.HasPrefix(model, "claude-") {
-		return model, nil
+		resolved.UpstreamModel = model
+		return resolved, nil
 	}
-	return "", fmt.Errorf("antigravity channel: model %q is not mapped", requested)
+	return nil, fmt.Errorf("antigravity channel: model %q is not mapped", requested)
 }
 
 func mustJSON(key *service.AntigravityOAuthKey) string {
@@ -391,6 +445,50 @@ func ensureAntigravityThoughtSignatures(request *dto.GeminiChatRequest) {
 
 func isAntigravityRelayResponses(info *relaycommon.RelayInfo) bool {
 	return info != nil && (info.RelayMode == relayconstant.RelayModeResponses || info.RelayMode == relayconstant.RelayModeResponsesCompact)
+}
+
+func applyRequestEnvelopeStyle(envelope *requestEnvelope, resolved *resolvedAntigravityRequest, sessionID string) {
+	if envelope == nil || resolved == nil {
+		return
+	}
+	if resolved.RequestStyle == antigravityRequestStyleGeminiCLI {
+		envelope.RequestType = ""
+		envelope.RequestID = ""
+		envelope.UserAgent = ""
+		return
+	}
+	envelope.RequestID = sessionID
+	envelope.UserAgent = "antigravity"
+	envelope.RequestType = resolved.RequestType
+}
+
+func logAntigravityUpstreamError(c *gin.Context, info *relaycommon.RelayInfo, statusCode int, message string) {
+	if c == nil {
+		return
+	}
+	msg := strings.Join(strings.Fields(strings.TrimSpace(message)), " ")
+	if len(msg) > 240 {
+		msg = msg[:240]
+	}
+	channelID := 0
+	relayMode := 0
+	originModel := ""
+	upstreamModel := ""
+	if info != nil {
+		channelID = info.ChannelId
+		relayMode = info.RelayMode
+		originModel = strings.TrimSpace(info.OriginModelName)
+		upstreamModel = strings.TrimSpace(info.UpstreamModelName)
+	}
+	logger.LogInfo(c, fmt.Sprintf(
+		"antigravity upstream error: channel_id=%d relay_mode=%d origin_model=%s upstream_model=%s status=%d summary=%s",
+		channelID,
+		relayMode,
+		originModel,
+		upstreamModel,
+		statusCode,
+		msg,
+	))
 }
 
 func antigravitySystemRoleName(modelName string) string {
