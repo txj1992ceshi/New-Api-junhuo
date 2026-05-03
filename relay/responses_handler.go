@@ -95,38 +95,9 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	if err != nil {
 		return types.NewError(fmt.Errorf("failed to copy request to GeneralOpenAIRequest: %w", err), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 	}
-	intent := service.DetectResponsesRoutingIntent(info.RelayMode, info.OriginModelName, request)
-	if intent.StatefulRequested {
-		common.SetContextKey(c, appconstant.ContextKeyResponsesStatefulRequested, true)
-	}
-	capability := service.ResolveResponsesStatefulCapability(info.ChannelOtherSettings, info.ChannelType, info.RelayMode, info.OriginModelName, intent.StatefulRequested)
-	if capability != "" && capability != service.ResponsesStatefulCapabilityNone {
-		common.SetContextKey(c, appconstant.ContextKeyResponsesStatefulCapability, capability)
-	}
-	switch capability {
-	case service.ResponsesStatefulCapabilityNative:
-		common.SetContextKey(c, appconstant.ContextKeyResponsesStatefulNativeUsed, true)
-	case service.ResponsesStatefulCapabilityReplay:
-		if err := service.PrepareResponsesReplayRequest(c, info, request); err != nil {
-			return types.NewErrorWithStatusCode(err, types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
-		}
-		compatResult := service.ApplyResponsesCompatibilityProfile(c, info.RelayMode, info.ChannelType, info.OriginModelName, request)
-		if compatResult.Applied {
-			service.LogResponsesCompatibilityApplied(c, info, compatResult)
-		}
-	case service.ResponsesStatefulCapabilityNone:
-		if intent.StatefulRequested {
-			return types.NewErrorWithStatusCode(
-				fmt.Errorf("model %s is not available for stateful responses on channel %d", info.OriginModelName, info.ChannelId),
-				types.ErrorCodeModelNotFound,
-				http.StatusServiceUnavailable,
-				types.ErrOptionWithSkipRetry(),
-			)
-		}
-		compatResult := service.ApplyResponsesCompatibilityProfile(c, info.RelayMode, info.ChannelType, info.OriginModelName, request)
-		if compatResult.Applied {
-			service.LogResponsesCompatibilityApplied(c, info, compatResult)
-		}
+	compatResult := service.ApplyResponsesCompatibilityProfile(c, info.RelayMode, info.ChannelType, info.OriginModelName, request)
+	if compatResult.Applied {
+		service.LogResponsesCompatibilityApplied(c, info, compatResult)
 	}
 
 	err = helper.ModelMappedHelper(c, info, request)
@@ -198,11 +169,6 @@ func ResponsesHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *
 	usageDto, ok := result.Usage.(*dto.Usage)
 	if !ok || usageDto == nil {
 		return types.NewErrorWithStatusCode(fmt.Errorf("invalid usage result %T", result.Usage), types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-	}
-	if capability == service.ResponsesStatefulCapabilityReplay {
-		if err := service.StoreResponsesReplayEntity(c, info, request); err != nil {
-			return types.NewErrorWithStatusCode(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
-		}
 	}
 	if info.RelayMode == relayconstant.RelayModeResponsesCompact {
 		originModelName := info.OriginModelName

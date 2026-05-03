@@ -44,9 +44,6 @@ type ChannelOtherSettings struct {
 	UpstreamModelUpdateIgnoredModels      []string          `json:"upstream_model_update_ignored_models,omitempty"`       // 手动忽略的模型
 	ResponsesModelMapping                 map[string]string `json:"responses_model_mapping,omitempty"`                    // 仅 /v1/responses 生效的模型映射
 	ResponsesCompactModelMapping          map[string]string `json:"responses_compact_model_mapping,omitempty"`            // 仅 /v1/responses/compact 生效的模型映射
-	SupportsNativeStatefulResponses       bool              `json:"supports_native_stateful_responses,omitempty"`         // 是否原生支持 stateful /v1/responses
-	SupportsStatefulResponsesReplay       bool              `json:"supports_stateful_responses_replay,omitempty"`         // 是否支持服务端 stateful replay 兼容
-	SupportsCompactStatefulResponses      bool              `json:"supports_compact_stateful_responses,omitempty"`        // 是否支持 /v1/responses/compact 的 stateful 兼容
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

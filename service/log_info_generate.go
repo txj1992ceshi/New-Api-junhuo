@@ -76,30 +76,6 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 			other["responses_compat_normalized_input"] = true
 		}
 	}
-	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStatefulRequested) {
-		other["responses_stateful_requested"] = true
-	}
-	if capability := common.GetContextKeyString(ctx, constant.ContextKeyResponsesStatefulCapability); capability != "" {
-		other["responses_stateful_capability"] = capability
-	}
-	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStatefulNativeUsed) {
-		other["responses_stateful_native_used"] = true
-	}
-	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStatefulReplayUsed) {
-		other["responses_stateful_replay_used"] = true
-	}
-	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesEntityLookupHit) {
-		other["responses_entity_lookup_hit"] = true
-	}
-	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesEntityLookupMiss) {
-		other["responses_entity_lookup_miss"] = true
-	}
-	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesFallbackFromNativeToReplay) {
-		other["responses_fallback_from_native_to_replay"] = true
-	}
-	if entityID := common.GetContextKeyString(ctx, constant.ContextKeyResponsesEntityID); entityID != "" {
-		other["responses_entity_id"] = entityID
-	}
 	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateSanitized) {
 		other["responses_state_sanitized"] = true
 		if fields := common.GetContextKeyStringSlice(ctx, constant.ContextKeyResponsesStateSanitizedFields); len(fields) > 0 {
