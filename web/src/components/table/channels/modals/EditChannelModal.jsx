@@ -2250,6 +2250,39 @@ const EditChannelModal = (props) => {
     </Space>
   ) : null;
 
+  const antigravityEditActions =
+    inputs.type === 58 && isEdit ? (
+      <div className='mb-4'>
+        <Space wrap spacing='tight'>
+          <Button
+            type='primary'
+            theme='outline'
+            onClick={() => setAntigravityOAuthModalVisible(true)}
+            disabled={isIonetLocked}
+          >
+            {t('继续授权追加账号')}
+          </Button>
+          <Button
+            type='primary'
+            theme='outline'
+            onClick={handleRefreshAntigravityCredential}
+            loading={antigravityCredentialRefreshing}
+            disabled={isIonetLocked}
+          >
+            {t('刷新凭证')}
+          </Button>
+          <Button
+            type='primary'
+            theme='outline'
+            onClick={handleShow2FAModal}
+            disabled={isIonetLocked}
+          >
+            {t('查看密钥')}
+          </Button>
+        </Space>
+      </div>
+    ) : null;
+
   const channelOptionList = useMemo(
     () =>
       CHANNEL_OPTIONS.map((opt) => ({
@@ -3070,14 +3103,17 @@ const EditChannelModal = (props) => {
                       )}
 
                       {inputs.type === 58 && (
-                        <Banner
-                          type='warning'
-                          closeIcon={null}
-                          className='mb-4 rounded-xl'
-                          description={t(
-                            '免责声明：该渠道依赖 Google OAuth 与非官方 Antigravity 网关接入，仅建议个人自用。请勿分发或共享凭据，并自行评估账号、额度与服务稳定性风险。',
-                          )}
-                        />
+                        <>
+                          <Banner
+                            type='warning'
+                            closeIcon={null}
+                            className='mb-4 rounded-xl'
+                            description={t(
+                              '免责声明：该渠道依赖 Google OAuth 与非官方 Antigravity 网关接入，仅建议个人自用。请勿分发或共享凭据，并自行评估账号、额度与服务稳定性风险。',
+                            )}
+                          />
+                          {antigravityEditActions}
+                        </>
                       )}
 
                       {inputs.type === 20 && (
@@ -3409,24 +3445,10 @@ const EditChannelModal = (props) => {
                                         }
                                         disabled={isIonetLocked}
                                       >
-                                        {t('Antigravity 授权')}
+                                        {isEdit
+                                          ? t('继续授权追加账号')
+                                          : t('Antigravity 授权')}
                                       </Button>
-                                      {isEdit && (
-                                        <Button
-                                          size='small'
-                                          type='primary'
-                                          theme='outline'
-                                          onClick={
-                                            handleRefreshAntigravityCredential
-                                          }
-                                          loading={
-                                            antigravityCredentialRefreshing
-                                          }
-                                          disabled={isIonetLocked}
-                                        >
-                                          {t('刷新凭证')}
-                                        </Button>
-                                      )}
                                       <Button
                                         size='small'
                                         type='primary'
@@ -3436,17 +3458,6 @@ const EditChannelModal = (props) => {
                                       >
                                         {t('格式化')}
                                       </Button>
-                                      {isEdit && (
-                                        <Button
-                                          size='small'
-                                          type='primary'
-                                          theme='outline'
-                                          onClick={handleShow2FAModal}
-                                          disabled={isIonetLocked}
-                                        >
-                                          {t('查看密钥')}
-                                        </Button>
-                                      )}
                                       {batchExtra}
                                     </Space>
                                   </div>
