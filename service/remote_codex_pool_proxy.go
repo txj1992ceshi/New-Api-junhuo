@@ -34,6 +34,43 @@ type RemoteCodexPoolChannelSummary struct {
 	CodexPoolSummary *model.CodexPoolSummary `json:"codex_pool_summary,omitempty"`
 }
 
+type remoteCodexPoolHealthResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Data    *struct {
+		Health *CodexPoolHealth `json:"health"`
+	} `json:"data"`
+}
+
+func fetchRemoteCodexPoolSummary(ctx context.Context, channel *model.Channel, channelID int) (*model.CodexPoolSummary, error) {
+	body, _, err := ProxyRemoteCodexPoolJSON(ctx, channel, http.MethodGet, fmt.Sprintf("/api/channel/%d/codex/pool_health", channelID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp remoteCodexPoolHealthResponse
+	if err := common.Unmarshal(body, &resp); err != nil {
+		return nil, err
+	}
+	if !resp.Success {
+		if resp.Message == "" {
+			resp.Message = "remote codex pool health request failed"
+		}
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+	if resp.Data == nil || resp.Data.Health == nil {
+		return nil, fmt.Errorf("remote codex pool health missing")
+	}
+	health := resp.Data.Health
+	return &model.CodexPoolSummary{
+		AvailableCount: health.AvailableCount,
+		HealthyCount:   health.Healthy + health.New,
+		CooldownCount:  health.Cooldown,
+		SuspectCount:   health.Suspect,
+		DeadCount:      health.Dead,
+		TotalCount:     health.Total,
+	}, nil
+}
+
 func parseRemoteCodexPoolInt(raw string) int {
 	value, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil {
@@ -239,8 +276,12 @@ func GetRemoteCodexPoolChannelSummary(ctx context.Context, channel *model.Channe
 	if resp.Data == nil {
 		return nil, fmt.Errorf("remote codex channel not found")
 	}
+	summary := resp.Data.CodexPoolSummary
+	if summary == nil {
+		summary, _ = fetchRemoteCodexPoolSummary(ctx, channel, proxy.ChannelID)
+	}
 	return &RemoteCodexPoolChannelSummary{
 		ChannelInfo:      &resp.Data.ChannelInfo,
-		CodexPoolSummary: resp.Data.CodexPoolSummary,
+		CodexPoolSummary: summary,
 	}, nil
 }
