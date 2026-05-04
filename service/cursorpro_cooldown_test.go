@@ -32,6 +32,30 @@ func TestEvaluateCursorProTriggerCooldownFailedStateBlocks(t *testing.T) {
 	}
 }
 
+func TestEvaluateCursorProTriggerCooldownNearExhaustedUsesLongerWindows(t *testing.T) {
+	now := time.Now()
+	state := &cursorProTriggerState{
+		LastTriggerAt:      now.Add(-60 * time.Second),
+		LastResultStatus:   "failed",
+		RecentTriggerTimes: []time.Time{now.Add(-60 * time.Second)},
+	}
+	health := &CodexPoolHealth{
+		Healthy:        1,
+		AvailableCount: 1,
+	}
+
+	decision := evaluateCursorProTriggerCooldownWithMode(state, nil, health, 0, 5, now, cursorProReplacementModeNearExhausted)
+	if decision.Allowed {
+		t.Fatal("expected cooldown to block near-exhausted failed trigger")
+	}
+	if decision.CooldownBaseSeconds != 300 {
+		t.Fatalf("expected failed trigger cooldown 300, got %d", decision.CooldownBaseSeconds)
+	}
+	if decision.CooldownBreakAllowed {
+		t.Fatal("expected no cooldown break for non-empty pool in near-exhausted mode")
+	}
+}
+
 func TestEvaluateCursorProTriggerCooldownBreaksWhenPoolIsEmpty(t *testing.T) {
 	now := time.Now()
 	state := &cursorProTriggerState{
@@ -58,6 +82,27 @@ func TestEvaluateCursorProTriggerCooldownBreaksWhenPoolIsEmpty(t *testing.T) {
 	}
 }
 
+func TestEvaluateCursorProTriggerCooldownNearExhaustedOnlyBreaksOnEmptyPool(t *testing.T) {
+	now := time.Now()
+	state := &cursorProTriggerState{
+		LastTriggerAt:      now.Add(-60 * time.Second),
+		LastResultStatus:   "succeeded",
+		RecentTriggerTimes: []time.Time{now.Add(-60 * time.Second)},
+	}
+	health := &CodexPoolHealth{
+		Healthy:        1,
+		AvailableCount: 1,
+	}
+
+	decision := evaluateCursorProTriggerCooldownWithMode(state, nil, health, 4, 3, now, cursorProReplacementModeNearExhausted)
+	if decision.Allowed {
+		t.Fatal("expected near-exhausted cooldown to stay blocked when pool still has availability")
+	}
+	if decision.CooldownBreakAllowed {
+		t.Fatal("expected near-exhausted mode to ignore hot-path break conditions")
+	}
+}
+
 func TestEvaluateCursorProTriggerCooldownShortensAfterUsableRecovery(t *testing.T) {
 	now := time.Now()
 	triggerAt := now.Add(-30 * time.Second)
@@ -79,6 +124,30 @@ func TestEvaluateCursorProTriggerCooldownShortensAfterUsableRecovery(t *testing.
 	}
 	if decision.CooldownBaseSeconds != 45 {
 		t.Fatalf("expected usable recovery cooldown 45, got %d", decision.CooldownBaseSeconds)
+	}
+}
+
+func TestEvaluateCursorProTriggerCooldownNearExhaustedShortensAfterRecovery(t *testing.T) {
+	now := time.Now()
+	triggerAt := now.Add(-30 * time.Second)
+	state := &cursorProTriggerState{
+		LastTriggerAt:                triggerAt,
+		LastResultStatus:             "succeeded",
+		LastSuccessfulRecoveryAt:     now.Add(-10 * time.Second),
+		LastSuccessfulRecoveryReason: "source_sync_succeeded",
+		RecentTriggerTimes:           []time.Time{triggerAt},
+	}
+	health := &CodexPoolHealth{
+		Healthy:        1,
+		AvailableCount: 1,
+	}
+
+	decision := evaluateCursorProTriggerCooldownWithMode(state, nil, health, 0, 0, now, cursorProReplacementModeNearExhausted)
+	if decision.Allowed {
+		t.Fatal("expected short successful cooldown to still block at 30s")
+	}
+	if decision.CooldownBaseSeconds != 120 {
+		t.Fatalf("expected usable recovery cooldown 120, got %d", decision.CooldownBaseSeconds)
 	}
 }
 

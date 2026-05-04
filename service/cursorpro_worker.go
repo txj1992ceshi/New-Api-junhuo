@@ -334,6 +334,17 @@ func loadCursorProCooldownContext(channelID int, now time.Time) (*CodexPoolHealt
 	return ComputeCodexPoolHealth(channel, now), RecentCodexNoAvailableCount(channelID, now), RecentCodexHotPathTriggerCount(channelID, now)
 }
 
+func cursorProReplacementModeFromChannelID(channelID int) string {
+	if channelID <= 0 {
+		return cursorProReplacementModePoolHealth
+	}
+	channel, err := model.GetChannelById(channelID, true)
+	if err != nil {
+		return cursorProReplacementModePoolHealth
+	}
+	return cursorProReplacementMode(channel)
+}
+
 func hasUsableRecoverySinceTrigger(state *cursorProTriggerState, health *CodexPoolHealth, triggerAt time.Time) bool {
 	if state == nil || triggerAt.IsZero() {
 		return false
@@ -348,8 +359,21 @@ func hasUsableRecoverySinceTrigger(state *cursorProTriggerState, health *CodexPo
 }
 
 func deriveCursorProCooldownBaseSeconds(state *cursorProTriggerState, registerStatus *cursorProRegisterStatus, health *CodexPoolHealth) int {
+	return deriveCursorProCooldownBaseSecondsWithMode(state, registerStatus, health, cursorProReplacementModePoolHealth)
+}
+
+func deriveCursorProCooldownBaseSecondsWithMode(state *cursorProTriggerState, registerStatus *cursorProRegisterStatus, health *CodexPoolHealth, mode string) int {
 	if state == nil || state.LastTriggerAt.IsZero() {
 		return 0
+	}
+	if mode == cursorProReplacementModeNearExhausted {
+		if state.LastResultStatus == "failed" || (registerStatus != nil && registerStatus.Status == "failed") {
+			return 300
+		}
+		if hasUsableRecoverySinceTrigger(state, health, state.LastTriggerAt) {
+			return 120
+		}
+		return 180
 	}
 	if state.LastResultStatus == "failed" || (registerStatus != nil && registerStatus.Status == "failed") {
 		return 180
@@ -361,8 +385,15 @@ func deriveCursorProCooldownBaseSeconds(state *cursorProTriggerState, registerSt
 }
 
 func deriveCursorProCooldownBreakReason(health *CodexPoolHealth, recentNoAvailable int, recentHotPath int) string {
+	return deriveCursorProCooldownBreakReasonWithMode(health, recentNoAvailable, recentHotPath, cursorProReplacementModePoolHealth)
+}
+
+func deriveCursorProCooldownBreakReasonWithMode(health *CodexPoolHealth, recentNoAvailable int, recentHotPath int, mode string) string {
 	if health != nil && (health.AvailableCount <= 0 || health.Healthy+health.New <= 0) {
 		return "cooldown_break_available_count_zero"
+	}
+	if mode == cursorProReplacementModeNearExhausted {
+		return ""
 	}
 	if recentNoAvailable >= 3 {
 		return "cooldown_break_no_available_spike"
@@ -381,9 +412,24 @@ func evaluateCursorProTriggerCooldown(
 	recentHotPath int,
 	now time.Time,
 ) cursorProCooldownDecision {
+	return evaluateCursorProTriggerCooldownWithMode(state, registerStatus, health, recentNoAvailable, recentHotPath, now, cursorProReplacementModePoolHealth)
+}
+
+func evaluateCursorProTriggerCooldownWithMode(
+	state *cursorProTriggerState,
+	registerStatus *cursorProRegisterStatus,
+	health *CodexPoolHealth,
+	recentNoAvailable int,
+	recentHotPath int,
+	now time.Time,
+	mode string,
+) cursorProCooldownDecision {
 	decision := cursorProCooldownDecision{
 		Allowed:      true,
 		CooldownMode: "result_aware",
+	}
+	if mode == cursorProReplacementModeNearExhausted {
+		decision.CooldownMode = "near_exhausted_result_aware"
 	}
 	if state == nil {
 		return decision
@@ -405,17 +451,16 @@ func evaluateCursorProTriggerCooldown(
 		decision.BlockReason = "rate_limited"
 		return decision
 	}
-	baseSeconds := deriveCursorProCooldownBaseSeconds(state, registerStatus, health)
+	baseSeconds := deriveCursorProCooldownBaseSecondsWithMode(state, registerStatus, health, mode)
 	decision.CooldownBaseSeconds = baseSeconds
 	if state.LastTriggerAt.IsZero() || baseSeconds <= 0 {
 		return decision
 	}
 	decision.CooldownUntil = state.LastTriggerAt.Add(time.Duration(baseSeconds) * time.Second)
-	decision.CooldownMode = "result_aware"
 	if !decision.CooldownUntil.After(now) {
 		return decision
 	}
-	breakReason := deriveCursorProCooldownBreakReason(health, recentNoAvailable, recentHotPath)
+	breakReason := deriveCursorProCooldownBreakReasonWithMode(health, recentNoAvailable, recentHotPath, mode)
 	if breakReason != "" {
 		decision.CooldownBreakAllowed = true
 		decision.CooldownBreakReason = breakReason
@@ -440,8 +485,9 @@ func TriggerCursorProReplacement(ctx context.Context, channelID int, reason stri
 	tokenStatus, _ := readCursorProTokenStatus(ctx)
 	registerStatus, _ := readCursorProRegisterStatus(ctx)
 	health, recentNoAvailable, recentHotPath := loadCursorProCooldownContext(channelID, now)
+	mode := cursorProReplacementModeFromChannelID(channelID)
 	updateCursorProSourceQuietSince(state, tokenStatus, now)
-	cooldownDecision := evaluateCursorProTriggerCooldown(state, registerStatus, health, recentNoAvailable, recentHotPath, now)
+	cooldownDecision := evaluateCursorProTriggerCooldownWithMode(state, registerStatus, health, recentNoAvailable, recentHotPath, now, mode)
 	if !cooldownDecision.Allowed {
 		return &CursorProReplacementResult{
 			Triggered: false,

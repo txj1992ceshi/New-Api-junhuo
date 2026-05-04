@@ -101,6 +101,19 @@ func ShouldTriggerCursorProReplacementOnHotPath(
 	if channel == nil || channel.Type != constant.ChannelTypeCodex {
 		return false, ""
 	}
+	if cursorProReplacementMode(channel) == cursorProReplacementModeNearExhausted {
+		health := ComputeCodexPoolHealth(channel, now)
+		recentNoAvailable := recentCodexNoAvailableCount(channel.Id, now)
+		if selectErr != nil && selectErr.GetErrorCode() == types.ErrorCodeChannelNoAvailableKey {
+			return true, "request_no_available_tokens"
+		}
+		if triedKeyCount >= 2 && (kind == CodexErrorKindRateLimit || kind == CodexErrorKindServer || kind == CodexErrorKindSoftFail) {
+			if (health != nil && health.AvailableCount <= 0) || recentNoAvailable >= 3 {
+				return true, "near_exhausted_hotpath_exhausted"
+			}
+		}
+		return false, ""
+	}
 	if selectErr != nil && selectErr.GetErrorCode() == types.ErrorCodeChannelNoAvailableKey {
 		return true, "request_no_available_tokens"
 	}

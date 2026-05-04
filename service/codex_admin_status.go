@@ -13,6 +13,7 @@ type CodexPoolHealthStatus struct {
 	ChannelID                    int                        `json:"channel_id"`
 	ChannelName                  string                     `json:"channel_name"`
 	AutoImportEnabled            bool                       `json:"auto_import_enabled"`
+	ReplacementMode              string                     `json:"cursorpro_replacement_mode,omitempty"`
 	Health                       *CodexPoolHealth           `json:"health"`
 	RecentNoAvailable5m          int                        `json:"recent_no_available_5m"`
 	RecentHotPathTriggers        int                        `json:"recent_hot_path_triggers_5m"`
@@ -49,6 +50,7 @@ type CursorProReplacementStatusView struct {
 	ChannelID                    int                        `json:"channel_id"`
 	ChannelName                  string                     `json:"channel_name"`
 	AutoImportEnabled            bool                       `json:"auto_import_enabled"`
+	ReplacementMode              string                     `json:"cursorpro_replacement_mode,omitempty"`
 	TriggerAllowed               bool                       `json:"trigger_allowed"`
 	BlockReason                  string                     `json:"block_reason,omitempty"`
 	LastTriggerReason            string                     `json:"last_trigger_reason,omitempty"`
@@ -167,6 +169,7 @@ func GetCodexPoolHealthStatus(channelID int, now time.Time) (*CodexPoolHealthSta
 		ChannelID:                    channel.Id,
 		ChannelName:                  channel.Name,
 		AutoImportEnabled:            isCursorProAutoImportEnabled(channel),
+		ReplacementMode:              cursorProReplacementMode(channel),
 		Health:                       health,
 		RecentNoAvailable5m:          recentNoAvailable,
 		RecentHotPathTriggers:        recentHotPathTriggers,
@@ -485,6 +488,7 @@ func GetCursorProReplacementStatus(ctx context.Context, channelID int, now time.
 		ChannelID:                    channel.Id,
 		ChannelName:                  channel.Name,
 		AutoImportEnabled:            isCursorProAutoImportEnabled(channel),
+		ReplacementMode:              cursorProReplacementMode(channel),
 		TriggerAllowed:               cooldownDecision.Allowed,
 		BlockReason:                  cooldownDecision.BlockReason,
 		LastTriggerReason:            state.LastTriggerReason,

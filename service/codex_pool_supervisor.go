@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,6 +15,11 @@ import (
 )
 
 const codexPoolSupervisorTickInterval = 30 * time.Second
+
+const (
+	cursorProReplacementModePoolHealth    = "pool_health"
+	cursorProReplacementModeNearExhausted = "near_exhausted"
+)
 
 var (
 	codexPoolSupervisorOnce    sync.Once
@@ -134,6 +140,17 @@ func ShouldTriggerCursorProReplacement(channel *model.Channel, health *CodexPool
 	if channel == nil || health == nil {
 		return false, ""
 	}
+	mode := cursorProReplacementMode(channel)
+	if mode == cursorProReplacementModeNearExhausted {
+		if health.AvailableCount <= 0 {
+			return true, "near_exhausted_available_zero"
+		}
+		if recentCodexNoAvailableCount(channel.Id, now) >= 3 {
+			return true, "near_exhausted_recent_no_available"
+		}
+		return false, ""
+	}
+
 	minWatermark := 5
 	info := channel.GetOtherInfo()
 	if raw, ok := info["cursorpro_min_healthy_watermark"]; ok {
@@ -157,6 +174,24 @@ func ShouldTriggerCursorProReplacement(channel *model.Channel, health *CodexPool
 		return true, "no_available_tokens"
 	}
 	return false, ""
+}
+
+func cursorProReplacementMode(channel *model.Channel) string {
+	if channel == nil || channel.Type != constant.ChannelTypeCodex {
+		return cursorProReplacementModePoolHealth
+	}
+	info := channel.GetOtherInfo()
+	if raw, ok := info["cursorpro_replacement_mode"]; ok {
+		if mode, ok := raw.(string); ok {
+			switch strings.ToLower(strings.TrimSpace(mode)) {
+			case cursorProReplacementModeNearExhausted:
+				return cursorProReplacementModeNearExhausted
+			case "", cursorProReplacementModePoolHealth:
+				return cursorProReplacementModePoolHealth
+			}
+		}
+	}
+	return cursorProReplacementModePoolHealth
 }
 
 func shouldPrioritizeCursorProSync(tokenStatus *cursorProTokenStatus, state *cursorProTriggerState, now time.Time) bool {
