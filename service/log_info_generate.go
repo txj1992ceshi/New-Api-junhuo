@@ -7,6 +7,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
@@ -49,6 +50,67 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 		other["is_model_mapped"] = true
 		other["upstream_model_name"] = relayInfo.UpstreamModelName
 	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesModelMappingApplied) {
+		other["responses_model_mapping_applied"] = true
+		if relayInfo.UpstreamModelName != "" {
+			other["upstream_model_name"] = relayInfo.UpstreamModelName
+		}
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatApplied) {
+		other["responses_compat_applied"] = true
+		if profile := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatProfile); profile != "" {
+			other["responses_compat_profile"] = profile
+		}
+		if mode := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatMode); mode != "" {
+			other["responses_compat_mode"] = mode
+		}
+		if fields := common.GetContextKeyStringSlice(ctx, constant.ContextKeyResponsesCompatRemovedFields); len(fields) > 0 {
+			other["responses_compat_removed_fields"] = fields
+		}
+		if originModel := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatOriginModel); originModel != "" {
+			other["responses_compat_origin_model"] = originModel
+		}
+		if channelType := common.GetContextKeyInt(ctx, constant.ContextKeyResponsesCompatChannelType); channelType != 0 {
+			other["responses_compat_channel_type"] = channelType
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatNormalizedInput) {
+			other["responses_compat_normalized_input"] = true
+		}
+		if removedToolItems := common.GetContextKeyInt(ctx, constant.ContextKeyResponsesCompatRemovedToolItems); removedToolItems > 0 {
+			other["responses_compat_removed_tool_items"] = removedToolItems
+		}
+		if removedHistoryItems := common.GetContextKeyInt(ctx, constant.ContextKeyResponsesCompatRemovedHistoryItems); removedHistoryItems > 0 {
+			other["responses_compat_removed_history_items"] = removedHistoryItems
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatIncludeDropped) {
+			other["responses_compat_include_dropped"] = true
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatStoreDropped) {
+			other["responses_compat_store_dropped"] = true
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatParallelToolsDropped) {
+			other["responses_compat_parallel_tool_calls_dropped"] = true
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatToolsDropped) {
+			other["responses_compat_tools_dropped"] = true
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatToolChoiceDropped) {
+			other["responses_compat_tool_choice_dropped"] = true
+		}
+		if strategy := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatToolStrategy); strategy != "" {
+			other["responses_compat_tool_strategy"] = strategy
+		}
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateSanitized) {
+		other["responses_state_sanitized"] = true
+		if fields := common.GetContextKeyStringSlice(ctx, constant.ContextKeyResponsesStateSanitizedFields); len(fields) > 0 {
+			other["responses_state_sanitized_fields"] = fields
+		}
+		other["responses_state_had_previous_response_id"] = common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateHadPreviousResponseID)
+		other["responses_state_had_conversation"] = common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateHadConversation)
+		other["responses_state_had_context_management"] = common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateHadContextManagement)
+		other["responses_state_had_prompt_cache_key"] = common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateHadPromptCacheKey)
+	}
 
 	isSystemPromptOverwritten := common.GetContextKeyBool(ctx, constant.ContextKeySystemPromptOverride)
 	if isSystemPromptOverwritten {
@@ -61,6 +123,58 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	if isMultiKey {
 		adminInfo["is_multi_key"] = true
 		adminInfo["multi_key_index"] = common.GetContextKeyInt(ctx, constant.ContextKeyChannelMultiKeyIndex)
+	}
+	if email := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityEmail); email != "" {
+		adminInfo["antigravity_email"] = email
+	}
+	if projectID := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityEffectiveProjectID); projectID != "" {
+		adminInfo["antigravity_effective_project_id"] = projectID
+	}
+	if state := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityKeyState); state != "" {
+		adminInfo["antigravity_key_state"] = state
+	}
+	if class := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityErrorClass); class != "" {
+		adminInfo["antigravity_error_class"] = class
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityAccountSwitched) {
+		adminInfo["antigravity_account_switched"] = true
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityCredentialRefreshApplied) {
+		adminInfo["antigravity_credential_refresh_applied"] = true
+	}
+	if common.GetContextKeyInt(ctx, constant.ContextKeyChannelType) == constant.ChannelTypeAntigravity && common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatApplied) {
+		adminInfo["antigravity_responses_mode"] = "stateless_transcript"
+		if profile := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatProfile); profile != "" {
+			adminInfo["antigravity_responses_profile"] = profile
+		}
+		if fields := common.GetContextKeyStringSlice(ctx, constant.ContextKeyResponsesCompatRemovedFields); len(fields) > 0 {
+			adminInfo["antigravity_responses_removed_fields"] = fields
+		}
+		if removedToolItems := common.GetContextKeyInt(ctx, constant.ContextKeyResponsesCompatRemovedToolItems); removedToolItems > 0 {
+			adminInfo["antigravity_responses_tool_items_dropped"] = removedToolItems
+		}
+		if removedHistoryItems := common.GetContextKeyInt(ctx, constant.ContextKeyResponsesCompatRemovedHistoryItems); removedHistoryItems > 0 {
+			adminInfo["antigravity_responses_history_items_dropped"] = removedHistoryItems
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatIncludeDropped) {
+			adminInfo["antigravity_responses_include_dropped"] = true
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesToolsForcedOff) {
+			adminInfo["antigravity_responses_tools_forced_off"] = true
+		}
+		if strategy := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatToolStrategy); strategy != "" {
+			adminInfo["antigravity_responses_tool_strategy"] = strategy
+		}
+		if relayInfo != nil {
+			adminInfo["antigravity_responses_request_type"] = antigravityResponsesRequestType(relayInfo.RelayMode)
+			if relayInfo.UpstreamModelName != "" {
+				adminInfo["antigravity_responses_upstream_model"] = relayInfo.UpstreamModelName
+			}
+		}
+	}
+	AppendAntigravityResponsesStreamAdminInfo(ctx, adminInfo)
+	if class := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityErrorClass); class != "" && class == string(AntigravityErrorClassProtocolIncompatible) {
+		adminInfo["antigravity_protocol_incompatible"] = true
 	}
 
 	isLocalCountTokens := common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens)
@@ -78,6 +192,65 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	appendParamOverrideInfo(relayInfo, other)
 	appendStreamStatus(relayInfo, other)
 	return other
+}
+
+func AppendAntigravityResponsesStreamAdminInfo(ctx *gin.Context, adminInfo map[string]interface{}) {
+	if ctx == nil || adminInfo == nil {
+		return
+	}
+	if !common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesStreamCreated) &&
+		!common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesTextDelta) &&
+		!common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesItemDone) &&
+		!common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesVisibleOutput) &&
+		!common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesEmptyStream) &&
+		!common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesFailedAsEmpty) &&
+		common.GetContextKeyString(ctx, constant.ContextKeyAntigravityResponsesEmptyReason) == "" &&
+		common.GetContextKeyString(ctx, constant.ContextKeyAntigravityResponsesFinishSummary) == "" &&
+		common.GetContextKeyInt(ctx, constant.ContextKeyAntigravityResponsesCandidateCount) == 0 &&
+		common.GetContextKeyInt(ctx, constant.ContextKeyAntigravityResponsesCompletionToken) == 0 {
+		return
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesStreamCreated) {
+		adminInfo["antigravity_responses_stream_created_emitted"] = true
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesTextDelta) {
+		adminInfo["antigravity_responses_text_delta_emitted"] = true
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesItemDone) {
+		adminInfo["antigravity_responses_item_done_emitted"] = true
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesVisibleOutput) {
+		adminInfo["antigravity_responses_visible_output_present"] = true
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesEmptyStream) {
+		adminInfo["antigravity_responses_empty_stream_detected"] = true
+	}
+	if reason := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityResponsesEmptyReason); reason != "" {
+		adminInfo["antigravity_responses_empty_stream_reason"] = reason
+	}
+	if summary := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityResponsesFinishSummary); summary != "" {
+		adminInfo["antigravity_responses_finish_reason_summary"] = summary
+	}
+	if count := common.GetContextKeyInt(ctx, constant.ContextKeyAntigravityResponsesCandidateCount); count > 0 {
+		adminInfo["antigravity_responses_candidate_count"] = count
+	}
+	if completionTokens := common.GetContextKeyInt(ctx, constant.ContextKeyAntigravityResponsesCompletionToken); completionTokens > 0 {
+		adminInfo["antigravity_responses_completion_tokens"] = completionTokens
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesFailedAsEmpty) {
+		adminInfo["antigravity_responses_failed_as_empty"] = true
+	}
+}
+
+func antigravityResponsesRequestType(relayMode int) string {
+	switch relayMode {
+	case relayconstant.RelayModeResponses:
+		return "responses"
+	case relayconstant.RelayModeResponsesCompact:
+		return "responses_compact"
+	default:
+		return "unknown"
+	}
 }
 
 func appendParamOverrideInfo(relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {

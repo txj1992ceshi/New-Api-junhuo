@@ -30,8 +30,8 @@ var modelAliasToUpstream = map[string]string{
 	"gpt-5.4-mini":                         "gemini-3-flash",
 	"gpt-5.4-openai-compact":               "gemini-3-flash",
 	"gpt-5.4-mini-openai-compact":          "gemini-3-flash",
-	"gpt-5.5":                              "gemini-3.1-pro-low",
+	"gpt-5.5":                              "gemini-3-flash",
 	"gpt-5.5-mini":                         "gemini-3-flash",
-	"gpt-5.5-openai-compact":               "gemini-3.1-pro-low",
+	"gpt-5.5-openai-compact":               "gemini-3-flash",
 	"gpt-5.5-mini-openai-compact":          "gemini-3-flash",
 }

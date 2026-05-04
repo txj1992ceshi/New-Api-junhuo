@@ -72,23 +72,31 @@ func runAntigravityCredentialAutoRefreshOnce() {
 		if ch == nil || strings.TrimSpace(ch.Key) == "" {
 			continue
 		}
-		key, err := parseAntigravityOAuthKey(strings.TrimSpace(ch.Key))
-		if err != nil || strings.TrimSpace(key.RefreshToken) == "" {
-			continue
+		keys := ch.GetKeys()
+		for keyIndex, rawKey := range keys {
+			key, err := parseAntigravityOAuthKey(strings.TrimSpace(rawKey))
+			if err != nil || strings.TrimSpace(key.RefreshToken) == "" {
+				continue
+			}
+			exp := key.ExpiresAt()
+			if !exp.IsZero() && exp.Sub(now) > antigravityCredentialRefreshThreshold {
+				continue
+			}
+			refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			var newKey *AntigravityOAuthKey
+			if ch.ChannelInfo.IsMultiKey {
+				newKey, _, err = RefreshAntigravityChannelKeyCredential(refreshCtx, ch.Id, keyIndex, false)
+			} else {
+				newKey, _, err = RefreshAntigravityChannelCredential(refreshCtx, ch.Id, AntigravityCredentialRefreshOptions{ResetCaches: false})
+			}
+			cancel()
+			if err != nil {
+				logger.LogWarn(ctx, fmt.Sprintf("antigravity credential auto-refresh: channel_id=%d key_index=%d name=%s refresh failed: %v", ch.Id, keyIndex, ch.Name, err))
+				continue
+			}
+			refreshed++
+			logger.LogInfo(ctx, fmt.Sprintf("antigravity credential auto-refresh: channel_id=%d key_index=%d name=%s refreshed, expires_at=%s", ch.Id, keyIndex, ch.Name, newKey.Expired))
 		}
-		exp := key.ExpiresAt()
-		if !exp.IsZero() && exp.Sub(now) > antigravityCredentialRefreshThreshold {
-			continue
-		}
-		refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		newKey, _, err := RefreshAntigravityChannelCredential(refreshCtx, ch.Id, AntigravityCredentialRefreshOptions{ResetCaches: false})
-		cancel()
-		if err != nil {
-			logger.LogWarn(ctx, fmt.Sprintf("antigravity credential auto-refresh: channel_id=%d name=%s refresh failed: %v", ch.Id, ch.Name, err))
-			continue
-		}
-		refreshed++
-		logger.LogInfo(ctx, fmt.Sprintf("antigravity credential auto-refresh: channel_id=%d name=%s refreshed, expires_at=%s", ch.Id, ch.Name, newKey.Expired))
 	}
 	if refreshed > 0 {
 		model.InitChannelCache()

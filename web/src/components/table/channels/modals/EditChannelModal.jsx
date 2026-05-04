@@ -98,6 +98,14 @@ const MODEL_MAPPING_EXAMPLE = {
   'gpt-3.5-turbo': 'gpt-3.5-turbo-0125',
 };
 
+const RESPONSES_MODEL_MAPPING_EXAMPLE = {
+  'gpt-5.4': 'gpt-5.5',
+};
+
+const RESPONSES_COMPACT_MODEL_MAPPING_EXAMPLE = {
+  'gpt-5.4-openai-compact': 'gpt-5.5-openai-compact',
+};
+
 const STATUS_CODE_MAPPING_EXAMPLE = {
   400: '500',
 };
@@ -212,6 +220,8 @@ const EditChannelModal = (props) => {
     system_prompt: '',
     system_prompt_override: false,
     settings: '',
+    responses_model_mapping: '',
+    responses_compact_model_mapping: '',
     // 仅 Vertex: 密钥格式（存入 settings.vertex_key_type）
     vertex_key_type: 'json',
     // 仅 AWS: 密钥格式和区域（存入 settings.aws_key_type 和 settings.aws_region）
@@ -951,6 +961,17 @@ const EditChannelModal = (props) => {
           )
             ? parsedSettings.upstream_model_update_ignored_models.join(',')
             : '';
+          data.responses_model_mapping = parsedSettings.responses_model_mapping
+            ? JSON.stringify(parsedSettings.responses_model_mapping, null, 2)
+            : '';
+          data.responses_compact_model_mapping =
+            parsedSettings.responses_compact_model_mapping
+              ? JSON.stringify(
+                  parsedSettings.responses_compact_model_mapping,
+                  null,
+                  2,
+                )
+              : '';
         } catch (error) {
           console.error('解析其他设置失败:', error);
           data.azure_responses_version = '';
@@ -970,6 +991,8 @@ const EditChannelModal = (props) => {
           data.upstream_model_update_last_check_time = 0;
           data.upstream_model_update_last_detected_models = [];
           data.upstream_model_update_ignored_models = '';
+          data.responses_model_mapping = '';
+          data.responses_compact_model_mapping = '';
         }
       } else {
         // 兼容历史数据：老渠道没有 settings 时，默认按 json 展示
@@ -988,6 +1011,8 @@ const EditChannelModal = (props) => {
         data.upstream_model_update_last_check_time = 0;
         data.upstream_model_update_last_detected_models = [];
         data.upstream_model_update_ignored_models = '';
+        data.responses_model_mapping = '';
+        data.responses_compact_model_mapping = '';
       }
 
       if (
@@ -1058,6 +1083,10 @@ const EditChannelModal = (props) => {
         (data.weight && data.weight !== 0) ||
         (data.proxy && data.proxy.trim()) ||
         (data.system_prompt && data.system_prompt.trim()) ||
+        (data.responses_model_mapping &&
+          data.responses_model_mapping.trim()) ||
+        (data.responses_compact_model_mapping &&
+          data.responses_compact_model_mapping.trim()) ||
         data.thinking_to_content ||
         data.pass_through_body_enabled ||
         data.force_format ||
@@ -1281,6 +1310,41 @@ const EditChannelModal = (props) => {
   const handleAntigravityOAuthGenerated = (key) => {
     handleInputChange('key', key);
     formatJsonField('key');
+  };
+
+  const refreshAntigravityCredentialState = async () => {
+    const res = await API.get(`/api/channel/${channelId}`, {
+      skipErrorHandler: true,
+    });
+    if (!res?.data?.success) {
+      throw new Error(res?.data?.message || 'Failed to reload channel');
+    }
+
+    const channel = res.data.data || {};
+    const keyValue = channel.key ?? '';
+    const channelInfo = channel.channel_info || {};
+    const isMulti = channelInfo.is_multi_key === true;
+
+    setInputs((prev) => ({
+      ...prev,
+      key: keyValue,
+    }));
+
+    if (formApiRef.current) {
+      formApiRef.current.setValue('key', keyValue);
+    }
+
+    setIsMultiKeyChannel(isMulti);
+    if (isMulti) {
+      setBatch(true);
+      setMultiToSingle(true);
+      setMultiKeyMode(channelInfo.multi_key_mode || 'random');
+    }
+  };
+
+  const handleAntigravityOAuthSaved = async () => {
+    if (!isEdit || !channelId) return;
+    await refreshAntigravityCredentialState();
   };
 
   const handleRefreshAntigravityCredential = async () => {
@@ -1905,6 +1969,34 @@ const EditChannelModal = (props) => {
     if (typeof settings.upstream_model_update_last_check_time !== 'number') {
       settings.upstream_model_update_last_check_time = 0;
     }
+    if (
+      typeof localInputs.responses_model_mapping === 'string' &&
+      localInputs.responses_model_mapping.trim() !== ''
+    ) {
+      if (!verifyJSON(localInputs.responses_model_mapping)) {
+        showInfo(t('/responses 模型映射必须是合法的 JSON 格式！'));
+        return;
+      }
+      settings.responses_model_mapping = JSON.parse(
+        localInputs.responses_model_mapping,
+      );
+    } else {
+      delete settings.responses_model_mapping;
+    }
+    if (
+      typeof localInputs.responses_compact_model_mapping === 'string' &&
+      localInputs.responses_compact_model_mapping.trim() !== ''
+    ) {
+      if (!verifyJSON(localInputs.responses_compact_model_mapping)) {
+        showInfo(t('/responses/compact 模型映射必须是合法的 JSON 格式！'));
+        return;
+      }
+      settings.responses_compact_model_mapping = JSON.parse(
+        localInputs.responses_compact_model_mapping,
+      );
+    } else {
+      delete settings.responses_compact_model_mapping;
+    }
 
     localInputs.settings = JSON.stringify(settings);
 
@@ -1933,6 +2025,8 @@ const EditChannelModal = (props) => {
     delete localInputs.upstream_model_update_last_check_time;
     delete localInputs.upstream_model_update_last_detected_models;
     delete localInputs.upstream_model_update_ignored_models;
+    delete localInputs.responses_model_mapping;
+    delete localInputs.responses_compact_model_mapping;
 
     let res;
     localInputs.auto_ban = localInputs.auto_ban ? 1 : 0;
@@ -2155,6 +2249,39 @@ const EditChannelModal = (props) => {
       )}
     </Space>
   ) : null;
+
+  const antigravityEditActions =
+    inputs.type === 58 && isEdit ? (
+      <div className='mb-4'>
+        <Space wrap spacing='tight'>
+          <Button
+            type='primary'
+            theme='outline'
+            onClick={() => setAntigravityOAuthModalVisible(true)}
+            disabled={isIonetLocked}
+          >
+            {t('继续授权追加账号')}
+          </Button>
+          <Button
+            type='primary'
+            theme='outline'
+            onClick={handleRefreshAntigravityCredential}
+            loading={antigravityCredentialRefreshing}
+            disabled={isIonetLocked}
+          >
+            {t('刷新凭证')}
+          </Button>
+          <Button
+            type='primary'
+            theme='outline'
+            onClick={handleShow2FAModal}
+            disabled={isIonetLocked}
+          >
+            {t('查看密钥')}
+          </Button>
+        </Space>
+      </div>
+    ) : null;
 
   const channelOptionList = useMemo(
     () =>
@@ -2976,14 +3103,17 @@ const EditChannelModal = (props) => {
                       )}
 
                       {inputs.type === 58 && (
-                        <Banner
-                          type='warning'
-                          closeIcon={null}
-                          className='mb-4 rounded-xl'
-                          description={t(
-                            '免责声明：该渠道依赖 Google OAuth 与非官方 Antigravity 网关接入，仅建议个人自用。请勿分发或共享凭据，并自行评估账号、额度与服务稳定性风险。',
-                          )}
-                        />
+                        <>
+                          <Banner
+                            type='warning'
+                            closeIcon={null}
+                            className='mb-4 rounded-xl'
+                            description={t(
+                              '免责声明：该渠道依赖 Google OAuth 与非官方 Antigravity 网关接入，仅建议个人自用。请勿分发或共享凭据，并自行评估账号、额度与服务稳定性风险。',
+                            )}
+                          />
+                          {antigravityEditActions}
+                        </>
                       )}
 
                       {inputs.type === 20 && (
@@ -3315,24 +3445,10 @@ const EditChannelModal = (props) => {
                                         }
                                         disabled={isIonetLocked}
                                       >
-                                        {t('Antigravity 授权')}
+                                        {isEdit
+                                          ? t('继续授权追加账号')
+                                          : t('Antigravity 授权')}
                                       </Button>
-                                      {isEdit && (
-                                        <Button
-                                          size='small'
-                                          type='primary'
-                                          theme='outline'
-                                          onClick={
-                                            handleRefreshAntigravityCredential
-                                          }
-                                          loading={
-                                            antigravityCredentialRefreshing
-                                          }
-                                          disabled={isIonetLocked}
-                                        >
-                                          {t('刷新凭证')}
-                                        </Button>
-                                      )}
                                       <Button
                                         size='small'
                                         type='primary'
@@ -3342,17 +3458,6 @@ const EditChannelModal = (props) => {
                                       >
                                         {t('格式化')}
                                       </Button>
-                                      {isEdit && (
-                                        <Button
-                                          size='small'
-                                          type='primary'
-                                          theme='outline'
-                                          onClick={handleShow2FAModal}
-                                          disabled={isIonetLocked}
-                                        >
-                                          {t('查看密钥')}
-                                        </Button>
-                                      )}
                                       {batchExtra}
                                     </Space>
                                   </div>
@@ -3361,13 +3466,6 @@ const EditChannelModal = (props) => {
                                 showClear
                               />
 
-                              <AntigravityOAuthModal
-                                visible={antigravityOAuthModalVisible}
-                                onCancel={() =>
-                                  setAntigravityOAuthModalVisible(false)
-                                }
-                                onSuccess={handleAntigravityOAuthGenerated}
-                              />
                             </>
                           ) : inputs.type === 41 &&
                             (inputs.vertex_key_type || 'json') === 'json' ? (
@@ -4178,6 +4276,55 @@ const EditChannelModal = (props) => {
                         )}
                       />
 
+                      <JSONEditor
+                        key={`responses_model_mapping-${isEdit ? channelId : 'new'}`}
+                        field='responses_model_mapping'
+                        label={t('/responses 模型映射')}
+                        placeholder={
+                          t(
+                            '此项可选，仅对 /v1/responses 生效，键为公共模型名，值为该渠道实际调用的上游模型，例如：',
+                          ) +
+                          `\n${JSON.stringify(RESPONSES_MODEL_MAPPING_EXAMPLE, null, 2)}`
+                        }
+                        value={inputs.responses_model_mapping || ''}
+                        onChange={(value) =>
+                          handleInputChange('responses_model_mapping', value)
+                        }
+                        template={RESPONSES_MODEL_MAPPING_EXAMPLE}
+                        templateLabel={t('填入模板')}
+                        editorType='keyValue'
+                        formApi={formApiRef.current}
+                        extraText={t(
+                          '仅影响 /v1/responses，请求外显模型名保持不变',
+                        )}
+                      />
+
+                      <JSONEditor
+                        key={`responses_compact_model_mapping-${isEdit ? channelId : 'new'}`}
+                        field='responses_compact_model_mapping'
+                        label={t('/responses/compact 模型映射')}
+                        placeholder={
+                          t(
+                            '此项可选，仅对 /v1/responses/compact 生效，键为公共模型名，值为该渠道实际调用的上游模型，例如：',
+                          ) +
+                          `\n${JSON.stringify(RESPONSES_COMPACT_MODEL_MAPPING_EXAMPLE, null, 2)}`
+                        }
+                        value={inputs.responses_compact_model_mapping || ''}
+                        onChange={(value) =>
+                          handleInputChange(
+                            'responses_compact_model_mapping',
+                            value,
+                          )
+                        }
+                        template={RESPONSES_COMPACT_MODEL_MAPPING_EXAMPLE}
+                        templateLabel={t('填入模板')}
+                        editorType='keyValue'
+                        formApi={formApiRef.current}
+                        extraText={t(
+                          '仅影响 /v1/responses/compact，请求外显模型名保持不变',
+                        )}
+                      />
+
                       {/* Auto Ban - Core Config */}
                       <Form.Switch
                         field='auto_ban'
@@ -4505,6 +4652,15 @@ const EditChannelModal = (props) => {
           }
           showSuccess(t('模型列表已追加更新'));
         }}
+      />
+
+      <AntigravityOAuthModal
+        visible={antigravityOAuthModalVisible}
+        channelId={channelId}
+        isEdit={isEdit}
+        onCancel={() => setAntigravityOAuthModalVisible(false)}
+        onSuccess={handleAntigravityOAuthGenerated}
+        onSaved={handleAntigravityOAuthSaved}
       />
     </>
   );

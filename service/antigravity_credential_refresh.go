@@ -115,6 +115,9 @@ func RefreshAntigravityChannelCredential(ctx context.Context, channelID int, opt
 	if ch.Type != constant.ChannelTypeAntigravity {
 		return nil, nil, fmt.Errorf("channel type is not Antigravity")
 	}
+	if ch.ChannelInfo.IsMultiKey {
+		return RefreshAntigravityChannelKeyCredential(ctx, channelID, 0, opts.ResetCaches)
+	}
 	oauthKey, err := RefreshAntigravityCredentialWithProxy(ctx, strings.TrimSpace(ch.Key), ch.GetSetting().Proxy)
 	if err != nil {
 		return nil, nil, err

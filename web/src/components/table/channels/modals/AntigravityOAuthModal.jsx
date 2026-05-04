@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Modal,
@@ -31,17 +31,40 @@ import { API, copy, showError, showSuccess } from '../../../../helpers';
 
 const { Text } = Typography;
 
-const AntigravityOAuthModal = ({ visible, onCancel, onSuccess }) => {
+const AntigravityOAuthModal = ({
+  visible,
+  onCancel,
+  onSuccess,
+  onSaved,
+  channelId,
+  isEdit = false,
+}) => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [authorizeUrl, setAuthorizeUrl] = useState('');
   const [input, setInput] = useState('');
 
+  const isChannelEditOAuth = useMemo(() => {
+    return Boolean(isEdit && channelId);
+  }, [channelId, isEdit]);
+
+  const startPath = isChannelEditOAuth
+    ? `/api/channel/${channelId}/antigravity/oauth/start`
+    : '/api/channel/antigravity/oauth/start';
+
+  const completePath = isChannelEditOAuth
+    ? `/api/channel/${channelId}/antigravity/oauth/complete`
+    : '/api/channel/antigravity/oauth/complete';
+
+  const submitLabel = isChannelEditOAuth
+    ? t('保存到当前渠道')
+    : t('生成并填入');
+
   const startOAuth = async () => {
     setLoading(true);
     try {
       const res = await API.post(
-        '/api/channel/antigravity/oauth/start',
+        startPath,
         {},
         { skipErrorHandler: true },
       );
@@ -70,12 +93,18 @@ const AntigravityOAuthModal = ({ visible, onCancel, onSuccess }) => {
     setLoading(true);
     try {
       const res = await API.post(
-        '/api/channel/antigravity/oauth/complete',
+        completePath,
         { input },
         { skipErrorHandler: true },
       );
       if (!res?.data?.success) {
         throw new Error(res?.data?.message || t('授权失败'));
+      }
+      if (isChannelEditOAuth) {
+        onSaved && onSaved(res?.data?.data || null);
+        showSuccess(t('已保存到当前渠道'));
+        onCancel && onCancel();
+        return;
       }
       const key = res?.data?.data?.key || '';
       if (!key) {
@@ -116,7 +145,7 @@ const AntigravityOAuthModal = ({ visible, onCancel, onSuccess }) => {
             onClick={completeOAuth}
             loading={loading}
           >
-            {t('生成并填入')}
+            {submitLabel}
           </Button>
         </Space>
       }
@@ -150,9 +179,13 @@ const AntigravityOAuthModal = ({ visible, onCancel, onSuccess }) => {
         />
 
         <Text type='tertiary' size='small'>
-          {t(
-            '说明：生成结果是可直接粘贴到渠道密钥里的 JSON（包含 access_token、refresh_token、project_id 等字段）。',
-          )}
+          {isChannelEditOAuth
+            ? t(
+                '说明：编辑已有渠道时，授权结果会直接保存到当前渠道，并按后端多账号逻辑追加或覆盖同邮箱账号。',
+              )
+            : t(
+                '说明：生成结果是可直接粘贴到渠道密钥里的 JSON（包含 access_token、refresh_token、project_id 等字段）。',
+              )}
         </Text>
       </Space>
     </Modal>

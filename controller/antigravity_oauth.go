@@ -157,6 +157,11 @@ func completeAntigravityOAuthWithChannelID(c *gin.Context, channelID int) {
 	tokenRes, err := service.ExchangeAntigravityAuthorizationCodeWithProxy(ctx, code, verifier, channelProxy)
 	if err != nil {
 		common.SysError("failed to exchange antigravity authorization code: " + err.Error())
+		var projectErr *service.AntigravityProjectResolutionError
+		if errors.As(err, &projectErr) {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": projectErr.UserMessage()})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"success": false, "message": "授权码交换失败，请重试"})
 		return
 	}
@@ -184,7 +189,16 @@ func completeAntigravityOAuthWithChannelID(c *gin.Context, channelID int) {
 	_ = session.Save()
 
 	if channelID > 0 {
-		if err := model.DB.Model(&model.Channel{}).Where("id = ?", channelID).Update("key", string(encoded)).Error; err != nil {
+		ch, err := model.GetChannelById(channelID, true)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if ch == nil {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "channel not found"})
+			return
+		}
+		if err := service.UpsertAntigravityOAuthKeyToChannel(ch, string(encoded), &key); err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -198,6 +212,7 @@ func completeAntigravityOAuthWithChannelID(c *gin.Context, channelID int) {
 				"email":              key.Email,
 				"project_id":         key.ProjectID,
 				"managed_project_id": key.ManagedProjectID,
+				"project_resolution": tokenRes.ProjectResolution,
 				"expires_at":         key.Expired,
 				"last_refresh":       key.LastRefresh,
 			},
@@ -213,6 +228,7 @@ func completeAntigravityOAuthWithChannelID(c *gin.Context, channelID int) {
 			"email":              key.Email,
 			"project_id":         key.ProjectID,
 			"managed_project_id": key.ManagedProjectID,
+			"project_resolution": tokenRes.ProjectResolution,
 			"expires_at":         key.Expired,
 			"last_refresh":       key.LastRefresh,
 		},

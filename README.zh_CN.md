@@ -173,6 +173,20 @@ docker run --name new-api -d --restart always \
 | ❓ 常见问题 | [FAQ](https://docs.newapi.pro/zh/docs/support/faq) |
 | 💬 社区交流 | [交流渠道](https://docs.newapi.pro/zh/docs/support/community-interaction) |
 
+**仓库内定制文档：**
+
+- [`junhuo` 架构说明](./docs/junhuo-architecture.md)
+- [`junhuo` 部署说明](./docs/junhuo-deployment.md)
+- [`junhuo` 渠道说明](./docs/junhuo-channels.md)
+- [`junhuo` 渠道配置样例](./docs/junhuo-channel-config-examples.md)
+- [`junhuo` 当前线上渠道快照说明](./docs/junhuo-current-channel-snapshot.md)
+- [`junhuo` 当前线上状态记录](./docs/junhuo-current-online-state.md)
+- [`junhuo` 运维手册](./docs/junhuo-operations.md)
+- [`junhuo` 发布与回滚 Checklist](./docs/junhuo-release-checklist.md)
+- [`junhuo` 发布记录模板](./docs/junhuo-release-log-template.md)
+- [`junhuo` 发布记录](./docs/junhuo-release-log.md)
+- [Antigravity / Codex 兼容笔记](./docs/junhuo-antigravity-codex-notes.md)
+
 ---
 
 ## ✨ 主要特性

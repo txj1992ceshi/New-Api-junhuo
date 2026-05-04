@@ -268,6 +268,7 @@ func processHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 
 		headerOverride[key] = value
 	}
+	filterHeaderOverrideForChannel(info, headerOverride)
 	return headerOverride, nil
 }
 
@@ -317,6 +318,15 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
 	return resp, nil
+}
+
+func filterHeaderOverrideForChannel(info *common.RelayInfo, headerOverride map[string]string) {
+	if info == nil || len(headerOverride) == 0 {
+		return
+	}
+	if info.ChannelType == channelconstant.ChannelTypeAntigravity {
+		delete(headerOverride, "user-agent")
+	}
 }
 
 func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {

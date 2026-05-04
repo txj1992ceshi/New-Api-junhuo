@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
@@ -77,6 +79,7 @@ func antigravityResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 	emittedCreated := false
 	outputIndex := 0
 	var aggregatedText strings.Builder
+	state := &antigravityResponsesStreamState{}
 
 	sendEvent := func(event dto.ResponsesStreamResponse) error {
 		data, err := common.Marshal(event)
@@ -92,6 +95,7 @@ func antigravityResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 			return nil
 		}
 		emittedCreated = true
+		state.createdEmitted = true
 		return sendEvent(dto.ResponsesStreamResponse{
 			Type: "response.created",
 			Response: &dto.OpenAIResponsesResponse{
@@ -116,6 +120,16 @@ func antigravityResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 		currentResp, currentUsage := buildResponsesResponseFromGemini(c, info, &geminiResp)
 		latestResponse = currentResp
 		*usage = *currentUsage
+		state.candidateCount += len(geminiResp.Candidates)
+		state.completionTokens = usage.OutputTokens
+		for _, candidate := range geminiResp.Candidates {
+			if candidate.FinishReason != nil {
+				reason := strings.TrimSpace(common.Interface2String(*candidate.FinishReason))
+				if reason != "" {
+					state.finishReasons = append(state.finishReasons, reason)
+				}
+			}
+		}
 
 		if err := sendCreated(); err != nil {
 			streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError)
@@ -131,6 +145,8 @@ func antigravityResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 					continue
 				}
 				aggregatedText.WriteString(text)
+				state.textDeltaEmitted = true
+				state.visibleOutputPresent = true
 				event := dto.ResponsesStreamResponse{
 					Type:        "response.output_text.delta",
 					Delta:       text,
@@ -144,6 +160,7 @@ func antigravityResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 				}
 				outputIndex++
 			case "function_call":
+				state.itemDoneEmitted = true
 				item := out
 				event := dto.ResponsesStreamResponse{
 					Type:        dto.ResponsesOutputTypeItemDone,
@@ -162,6 +179,16 @@ func antigravityResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 
 		if hasGeminiStop(&geminiResp) {
 			if latestResponse != nil {
+				setAntigravityResponsesStreamContext(c, state)
+				if shouldFailAntigravityResponsesEmptyStream(state, latestResponse, usage) {
+					common.SetContextKey(c, constant.ContextKeyAntigravityResponsesEmptyStream, true)
+					common.SetContextKey(c, constant.ContextKeyAntigravityResponsesEmptyReason, antigravityEmptyStreamReason(state))
+					if usage != nil && usage.OutputTokens >= 0 {
+						common.SetContextKey(c, constant.ContextKeyAntigravityResponsesCompletionToken, usage.OutputTokens)
+					}
+					logger.LogInfo(c, fmt.Sprintf("antigravity responses empty stream detected: request_path=%s origin_model_name=%s upstream_model_name=%s reason=%s candidates=%d completion_tokens=%d finish_reasons=%s",
+						info.RequestURLPath, info.OriginModelName, info.UpstreamModelName, antigravityEmptyStreamReason(state), state.candidateCount, usage.OutputTokens, summarizeFinishReasons(state.finishReasons)))
+				}
 				fillMissingResponsesText(latestResponse, aggregatedText.String())
 				event := dto.ResponsesStreamResponse{
 					Type:     "response.completed",
@@ -180,6 +207,16 @@ func antigravityResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 		return nil, streamErr
 	}
 	return usage, nil
+}
+
+type antigravityResponsesStreamState struct {
+	createdEmitted       bool
+	textDeltaEmitted     bool
+	itemDoneEmitted      bool
+	visibleOutputPresent bool
+	candidateCount       int
+	completionTokens     int
+	finishReasons        []string
 }
 
 func buildResponsesResponseFromGemini(c *gin.Context, info *relaycommon.RelayInfo, geminiResp *dto.GeminiChatResponse) (*dto.OpenAIResponsesResponse, *dto.Usage) {
@@ -366,4 +403,87 @@ func fillMissingResponsesText(resp *dto.OpenAIResponsesResponse, text string) {
 			Text: text,
 		}},
 	})
+}
+
+func shouldFailAntigravityResponsesEmptyStream(state *antigravityResponsesStreamState, resp *dto.OpenAIResponsesResponse, usage *dto.Usage) bool {
+	if state == nil {
+		return false
+	}
+	if state.visibleOutputPresent || state.textDeltaEmitted {
+		return false
+	}
+	if usage != nil && usage.OutputTokens > 0 {
+		return false
+	}
+	if resp == nil {
+		return true
+	}
+	for _, out := range resp.Output {
+		if extractResponsesOutputText(out) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func antigravityEmptyStreamReason(state *antigravityResponsesStreamState) string {
+	if state == nil {
+		return "unknown"
+	}
+	if state.itemDoneEmitted {
+		return "no_visible_assistant_output_with_tool_items"
+	}
+	if state.createdEmitted {
+		return "no_visible_assistant_output"
+	}
+	return "no_stream_events_emitted"
+}
+
+func summarizeFinishReasons(reasons []string) string {
+	if len(reasons) == 0 {
+		return ""
+	}
+	uniq := make([]string, 0, len(reasons))
+	seen := make(map[string]struct{}, len(reasons))
+	for _, reason := range reasons {
+		if reason == "" {
+			continue
+		}
+		if _, ok := seen[reason]; ok {
+			continue
+		}
+		seen[reason] = struct{}{}
+		uniq = append(uniq, reason)
+	}
+	return strings.Join(uniq, ",")
+}
+
+func setAntigravityResponsesStreamContext(c *gin.Context, state *antigravityResponsesStreamState) {
+	if c == nil || state == nil {
+		return
+	}
+	common.SetContextKey(c, constant.ContextKeyAntigravityResponsesStreamCreated, state.createdEmitted)
+	common.SetContextKey(c, constant.ContextKeyAntigravityResponsesTextDelta, state.textDeltaEmitted)
+	common.SetContextKey(c, constant.ContextKeyAntigravityResponsesItemDone, state.itemDoneEmitted)
+	common.SetContextKey(c, constant.ContextKeyAntigravityResponsesVisibleOutput, state.visibleOutputPresent)
+	if state.candidateCount > 0 {
+		common.SetContextKey(c, constant.ContextKeyAntigravityResponsesCandidateCount, state.candidateCount)
+	}
+	if state.completionTokens > 0 {
+		common.SetContextKey(c, constant.ContextKeyAntigravityResponsesCompletionToken, state.completionTokens)
+	}
+	if summary := summarizeFinishReasons(state.finishReasons); summary != "" {
+		common.SetContextKey(c, constant.ContextKeyAntigravityResponsesFinishSummary, summary)
+	}
+}
+
+func setAntigravityResponsesEmptyFailureContext(c *gin.Context, state *antigravityResponsesStreamState, usage *dto.Usage) {
+	setAntigravityResponsesStreamContext(c, state)
+	common.SetContextKey(c, constant.ContextKeyAntigravityResponsesEmptyStream, true)
+	common.SetContextKey(c, constant.ContextKeyAntigravityResponsesFailedAsEmpty, true)
+	common.SetContextKey(c, constant.ContextKeyAntigravityResponsesEmptyReason, antigravityEmptyStreamReason(state))
+	common.SetContextKey(c, constant.ContextKeyAntigravityErrorClass, string(service.AntigravityErrorClassProtocolIncompatible))
+	if usage != nil && usage.OutputTokens >= 0 {
+		common.SetContextKey(c, constant.ContextKeyAntigravityResponsesCompletionToken, usage.OutputTokens)
+	}
 }

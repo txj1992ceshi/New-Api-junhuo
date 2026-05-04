@@ -107,6 +107,8 @@ func Distribute() func(c *gin.Context) {
 								abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
 								return
 							}
+						} else if !service.ChannelSupportsRequestedModelForRelay(preferred, relayconstant.Path2RelayMode(c.Request.URL.Path), modelRequest.Model) {
+							preferred = nil
 						} else if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							autoGroups := service.GetUserAutoGroup(userGroup)
@@ -347,6 +349,15 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	if channel == nil {
 		return types.NewError(errors.New("channel is nil"), types.ErrorCodeGetChannelFailed, types.ErrOptionWithSkipRetry())
 	}
+	relayMode := relayconstant.Path2RelayMode(c.Request.URL.Path)
+	if !service.ChannelSupportsRequestedModelForRelay(channel, relayMode, modelName) {
+		return types.NewErrorWithStatusCode(
+			fmt.Errorf("model %s is not available for %s on channel #%d", modelName, c.Request.URL.Path, channel.Id),
+			types.ErrorCodeModelNotFound,
+			http.StatusServiceUnavailable,
+			types.ErrOptionWithSkipRetry(),
+		)
+	}
 	common.SetContextKey(c, constant.ContextKeyChannelId, channel.Id)
 	common.SetContextKey(c, constant.ContextKeyChannelName, channel.Name)
 	common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
@@ -364,8 +375,15 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		common.SetContextKey(c, constant.ContextKeyChannelOrganization, *channel.OpenAIOrganization)
 	}
 	common.SetContextKey(c, constant.ContextKeyChannelAutoBan, channel.GetAutoBan())
-	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
+	responsesModelMapping := service.GetResponsesModelMapping(channel, relayconstant.Path2RelayMode(c.Request.URL.Path))
+	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, service.MergeChannelModelMappings(channel.GetModelMapping(), responsesModelMapping))
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
+	common.SetContextKey(c, constant.ContextKeyResponsesModelMappingApplied, false)
+	if len(responsesModelMapping) > 0 {
+		if _, ok := responsesModelMapping[modelName]; ok {
+			common.SetContextKey(c, constant.ContextKeyResponsesModelMappingApplied, true)
+		}
+	}
 
 	var (
 		key   string
@@ -378,6 +396,16 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		}
 		if selection == nil {
 			return types.NewError(errors.New("no available codex key"), types.ErrorCodeChannelNoAvailableKey)
+		}
+		key = selection.Key
+		index = selection.KeyIndex
+	} else if channel.Type == constant.ChannelTypeAntigravity && channel.ChannelInfo.IsMultiKey {
+		selection, selErr := service.SelectAntigravityKey(channel, relayMode, modelName, nil, time.Now())
+		if selErr != nil {
+			return selErr
+		}
+		if selection == nil {
+			return types.NewError(errors.New("no available antigravity key"), types.ErrorCodeChannelNoAvailableKey)
 		}
 		key = selection.Key
 		index = selection.KeyIndex
@@ -394,6 +422,16 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		_ = index
 	}
 	if channel.ChannelInfo.IsMultiKey {
+		if channel.Type == constant.ChannelTypeAntigravity {
+			common.SetContextKey(c, constant.ContextKeyAntigravityAccountSwitched, false)
+		}
+		if channel.Type == constant.ChannelTypeAntigravity {
+			if previousMultiKey, exists := common.GetContextKey(c, constant.ContextKeyChannelMultiKeyIndex); exists {
+				if previousIndex, ok := previousMultiKey.(int); ok && previousIndex != index {
+					common.SetContextKey(c, constant.ContextKeyAntigravityAccountSwitched, true)
+				}
+			}
+		}
 		common.SetContextKey(c, constant.ContextKeyChannelIsMultiKey, true)
 		common.SetContextKey(c, constant.ContextKeyChannelMultiKeyIndex, index)
 	} else {
@@ -417,6 +455,11 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 			meta := channel.ChannelInfo.MultiKeyMeta[index]
 			common.SetContextKey(c, constant.ContextKeyCodexKeyState, string(meta.State))
 		}
+	} else if channel.Type == constant.ChannelTypeAntigravity && channel.ChannelInfo.MultiKeyMeta != nil {
+		meta := channel.ChannelInfo.MultiKeyMeta[index]
+		common.SetContextKey(c, constant.ContextKeyAntigravityEmail, meta.Email)
+		common.SetContextKey(c, constant.ContextKeyAntigravityEffectiveProjectID, meta.EffectiveProjectID)
+		common.SetContextKey(c, constant.ContextKeyAntigravityKeyState, string(meta.State))
 	}
 
 	common.SetContextKey(c, constant.ContextKeySystemPromptOverride, false)

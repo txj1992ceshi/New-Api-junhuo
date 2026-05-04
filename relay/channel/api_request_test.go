@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -190,4 +191,82 @@ func TestProcessHeaderOverride_PassHeadersTemplateSetsRuntimeHeaders(t *testing.
 	require.Equal(t, "Codex CLI", upstreamReq.Header.Get("Originator"))
 	require.Equal(t, "sess-123", upstreamReq.Header.Get("Session_id"))
 	require.Empty(t, upstreamReq.Header.Get("X-Codex-Beta-Features"))
+}
+
+func TestProcessHeaderOverride_AntigravityDropsUserAgentOverride(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ctx.Request.Header.Set("User-Agent", "codex-cli-test")
+	ctx.Request.Header.Set("Originator", "Codex CLI")
+
+	info := &relaycommon.RelayInfo{
+		RequestHeaders: map[string]string{
+			"User-Agent": "codex-cli-test",
+			"Originator": "Codex CLI",
+		},
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType: constant.ChannelTypeAntigravity,
+			ParamOverride: map[string]any{
+				"operations": []any{
+					map[string]any{
+						"mode":  "pass_headers",
+						"value": []any{"User-Agent", "Originator"},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := relaycommon.ApplyParamOverrideWithRelayInfo([]byte(`{"model":"gpt-5.5"}`), info)
+	require.NoError(t, err)
+
+	headers, err := processHeaderOverride(info, ctx)
+	require.NoError(t, err)
+	require.Equal(t, "Codex CLI", headers["originator"])
+	_, exists := headers["user-agent"]
+	require.False(t, exists)
+
+	upstreamReq := httptest.NewRequest(http.MethodPost, "https://example.com/v1internal:streamGenerateContent?alt=sse", nil)
+	upstreamReq.Header.Set("User-Agent", "antigravity/1.23.2 darwin/arm64")
+	applyHeaderOverrideToRequest(upstreamReq, headers)
+	require.Equal(t, "antigravity/1.23.2 darwin/arm64", upstreamReq.Header.Get("User-Agent"))
+	require.Equal(t, "Codex CLI", upstreamReq.Header.Get("Originator"))
+}
+
+func TestProcessHeaderOverride_NonAntigravityKeepsUserAgentOverride(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ctx.Request.Header.Set("User-Agent", "codex-cli-test")
+
+	info := &relaycommon.RelayInfo{
+		RequestHeaders: map[string]string{
+			"User-Agent": "codex-cli-test",
+		},
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType: constant.ChannelTypeOpenAI,
+			ParamOverride: map[string]any{
+				"operations": []any{
+					map[string]any{
+						"mode":  "pass_headers",
+						"value": []any{"User-Agent"},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := relaycommon.ApplyParamOverrideWithRelayInfo([]byte(`{"model":"gpt-5.5"}`), info)
+	require.NoError(t, err)
+
+	headers, err := processHeaderOverride(info, ctx)
+	require.NoError(t, err)
+	require.Equal(t, "codex-cli-test", headers["user-agent"])
 }
