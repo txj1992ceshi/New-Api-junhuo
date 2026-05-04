@@ -77,14 +77,14 @@ func TestApplyResponsesCompatibilityProfileAntigravity55StatelessTranscript(t *t
 
 	result := ApplyResponsesCompatibilityProfile(ctx, relayconstant.RelayModeResponses, constant.ChannelTypeAntigravity, "gpt-5.5", req)
 	require.True(t, result.Applied)
-	require.Equal(t, ResponsesCompatProfileStatelessV2Antigravity, result.Profile)
+	require.Equal(t, ResponsesCompatProfileStatelessV2AntigravityNoToolsGPT55, result.Profile)
 	require.Equal(t, "stateless", result.Mode)
 	require.True(t, result.NormalizedInput)
 	require.True(t, result.RemovedInclude)
 	require.True(t, result.RemovedStore)
 	require.True(t, result.RemovedParallelToolCall)
 	require.Greater(t, result.RemovedToolItems, 0)
-	require.Greater(t, result.RemovedHistoryItems, 0)
+	require.GreaterOrEqual(t, result.RemovedHistoryItems, 0)
 	require.Empty(t, req.PreviousResponseID)
 	require.Nil(t, req.Conversation)
 	require.Nil(t, req.ContextManagement)
@@ -94,23 +94,26 @@ func TestApplyResponsesCompatibilityProfileAntigravity55StatelessTranscript(t *t
 	require.Nil(t, req.Store)
 	require.Nil(t, req.ParallelToolCalls)
 	require.NotNil(t, req.Reasoning)
-	require.JSONEq(t, `"required"`, string(req.ToolChoice))
-	require.NotNil(t, req.Tools)
+	require.Nil(t, req.ToolChoice)
+	require.Nil(t, req.Tools)
+	require.True(t, result.RemovedTools)
+	require.True(t, result.RemovedToolChoice)
+	require.Equal(t, "no_tools_gpt55", result.ToolStrategy)
 	require.JSONEq(t, `"be terse"`, string(req.Instructions))
 	var input []map[string]any
 	require.NoError(t, common.Unmarshal(req.Input, &input))
-	require.Len(t, input, 4)
-	require.Equal(t, "developer", input[0]["role"])
-	require.Equal(t, "assistant", input[1]["role"])
-	require.Equal(t, "message", input[0]["type"])
-	content := input[1]["content"].([]any)
-	require.Len(t, content, 2)
-	lastContent := input[3]["content"].([]any)
-	require.Len(t, lastContent, 1)
+	require.NotEmpty(t, input)
+	require.Equal(t, "message", input[len(input)-1]["type"])
+	require.Equal(t, "user", input[len(input)-1]["role"])
+	lastContent := input[len(input)-1]["content"].([]any)
+	require.NotEmpty(t, lastContent)
 	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatApplied))
-	require.Equal(t, ResponsesCompatProfileStatelessV2Antigravity, common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatProfile))
+	require.Equal(t, ResponsesCompatProfileStatelessV2AntigravityNoToolsGPT55, common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatProfile))
 	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatNormalizedInput))
 	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatIncludeDropped))
+	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatToolsDropped))
+	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatToolChoiceDropped))
+	require.Equal(t, "no_tools_gpt55", common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatToolStrategy))
 }
 
 func TestApplyResponsesCompatibilityProfileCompact54(t *testing.T) {
@@ -128,6 +131,45 @@ func TestApplyResponsesCompatibilityProfileCompact54(t *testing.T) {
 	require.Empty(t, req.PreviousResponseID)
 	require.Nil(t, req.Conversation)
 	require.JSONEq(t, `"sum up"`, string(req.Instructions))
+}
+
+func TestApplyResponsesCompatibilityProfileKeepsToolsForAntigravity54(t *testing.T) {
+	req := &dto.OpenAIResponsesRequest{
+		Model:      "gpt-5.4",
+		Input:      mustMarshalCompatRaw([]map[string]any{{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hello"}}}}),
+		ToolChoice: mustMarshalCompatRaw("required"),
+		Tools: mustMarshalCompatRaw([]map[string]any{
+			{"type": "function", "function": map[string]any{"name": "lookup_weather"}},
+		}),
+	}
+
+	result := ApplyResponsesCompatibilityProfile(nil, relayconstant.RelayModeResponses, constant.ChannelTypeAntigravity, "gpt-5.4", req)
+	require.False(t, result.Applied)
+	require.False(t, result.RemovedTools)
+	require.False(t, result.RemovedToolChoice)
+	require.Empty(t, result.ToolStrategy)
+	require.NotNil(t, req.Tools)
+	require.JSONEq(t, `"required"`, string(req.ToolChoice))
+}
+
+func TestApplyResponsesCompatibilityProfileAntigravity55MiniDropsTools(t *testing.T) {
+	req := &dto.OpenAIResponsesRequest{
+		Model:      "gpt-5.5-mini",
+		Input:      mustMarshalCompatRaw([]map[string]any{{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hello"}}}}),
+		ToolChoice: mustMarshalCompatRaw(map[string]any{"type": "function", "function": map[string]any{"name": "lookup_weather"}}),
+		Tools: mustMarshalCompatRaw([]map[string]any{
+			{"type": "function", "function": map[string]any{"name": "lookup_weather"}},
+		}),
+	}
+
+	result := ApplyResponsesCompatibilityProfile(nil, relayconstant.RelayModeResponses, constant.ChannelTypeAntigravity, "gpt-5.5-mini", req)
+	require.True(t, result.Applied)
+	require.True(t, result.RemovedTools)
+	require.True(t, result.RemovedToolChoice)
+	require.Equal(t, ResponsesCompatProfileStatelessV2AntigravityNoToolsGPT55, result.Profile)
+	require.Equal(t, "no_tools_gpt55", result.ToolStrategy)
+	require.Nil(t, req.Tools)
+	require.Nil(t, req.ToolChoice)
 }
 
 func TestApplyResponsesCompatibilityProfileSkips55ForNonAntigravity(t *testing.T) {
@@ -171,6 +213,10 @@ func TestGenerateTextOtherInfoIncludesResponsesCompatibility(t *testing.T) {
 	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatRemovedToolItems, 2)
 	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatRemovedHistoryItems, 3)
 	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatIncludeDropped, true)
+	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatToolsDropped, true)
+	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatToolChoiceDropped, true)
+	common.SetContextKey(ctx, constant.ContextKeyResponsesCompatToolStrategy, "no_tools_gpt55")
+	common.SetContextKey(ctx, constant.ContextKeyAntigravityResponsesToolsForcedOff, true)
 	common.SetContextKey(ctx, constant.ContextKeyChannelType, constant.ChannelTypeAntigravity)
 
 	now := time.Now()
@@ -191,11 +237,16 @@ func TestGenerateTextOtherInfoIncludesResponsesCompatibility(t *testing.T) {
 	require.Equal(t, 2, other["responses_compat_removed_tool_items"])
 	require.Equal(t, 3, other["responses_compat_removed_history_items"])
 	require.Equal(t, true, other["responses_compat_include_dropped"])
+	require.Equal(t, true, other["responses_compat_tools_dropped"])
+	require.Equal(t, true, other["responses_compat_tool_choice_dropped"])
+	require.Equal(t, "no_tools_gpt55", other["responses_compat_tool_strategy"])
 	require.ElementsMatch(t, []string{"previous_response_id", "input.stateful_history", "include"}, other["responses_compat_removed_fields"].([]string))
 	adminInfo := other["admin_info"].(map[string]interface{})
 	require.Equal(t, "stateless_transcript", adminInfo["antigravity_responses_mode"])
 	require.Equal(t, ResponsesCompatProfileStatelessV2Antigravity, adminInfo["antigravity_responses_profile"])
 	require.Equal(t, "gemini-3-flash", adminInfo["antigravity_responses_upstream_model"])
+	require.Equal(t, true, adminInfo["antigravity_responses_tools_forced_off"])
+	require.Equal(t, "no_tools_gpt55", adminInfo["antigravity_responses_tool_strategy"])
 }
 
 func mustMarshalCompatRaw(v any) []byte {

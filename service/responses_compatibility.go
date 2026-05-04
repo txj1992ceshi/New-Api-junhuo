@@ -13,10 +13,13 @@ import (
 
 const ResponsesCompatProfileStatelessV1 = "stateless_responses_v1"
 const ResponsesCompatProfileStatelessV2Antigravity = "responses_stateless_v2_antigravity"
+const ResponsesCompatProfileStatelessV2AntigravityNoToolsGPT55 = "responses_stateless_v2_antigravity_no_tools_gpt55"
 
 type ResponsesCompatibilityProfile struct {
-	Name string
-	Mode string
+	Name         string
+	Mode         string
+	ForceNoTools bool
+	ToolStrategy string
 }
 
 type ResponsesCompatibilityResult struct {
@@ -30,6 +33,8 @@ type ResponsesCompatibilityResult struct {
 	RemovedInclude          bool
 	RemovedStore            bool
 	RemovedParallelToolCall bool
+	RemovedTools            bool
+	RemovedToolChoice       bool
 	HadPreviousResponseID   bool
 	HadConversation         bool
 	HadContextManagement    bool
@@ -38,6 +43,7 @@ type ResponsesCompatibilityResult struct {
 	HadStatefulMetadata     bool
 	ChannelType             int
 	OriginModel             string
+	ToolStrategy            string
 }
 
 var responsesCompatibilityProfiles = map[int]map[string]ResponsesCompatibilityProfile{
@@ -77,8 +83,9 @@ func ApplyResponsesCompatibilityProfile(c *gin.Context, relayMode int, channelTy
 
 	result.Profile = profile.Name
 	result.Mode = profile.Mode
+	result.ToolStrategy = profile.ToolStrategy
 
-	applyStatelessResponsesCompatibility(request, &result)
+	applyStatelessResponsesCompatibility(request, &result, profile)
 	result.Applied = len(result.RemovedFields) > 0 || result.NormalizedInput
 
 	recordResponsesCompatibilityResult(c, result)
@@ -91,8 +98,8 @@ func resolveResponsesCompatibilityProfile(relayMode int, originModel string, cha
 		return ResponsesCompatibilityProfile{}, false
 	}
 	if channelType == constant.ChannelTypeAntigravity {
-		if isAntigravityResponsesCompatModel(relayMode, originModel) {
-			return ResponsesCompatibilityProfile{Name: ResponsesCompatProfileStatelessV2Antigravity, Mode: "stateless"}, true
+		if profile, ok := resolveAntigravityResponsesCompatibilityProfile(relayMode, originModel); ok {
+			return profile, true
 		}
 	}
 	profiles, ok := responsesCompatibilityProfiles[relayMode]
@@ -107,7 +114,37 @@ func resolveResponsesCompatibilityProfile(relayMode int, originModel string, cha
 	return profile, true
 }
 
-func applyStatelessResponsesCompatibility(request *dto.OpenAIResponsesRequest, result *ResponsesCompatibilityResult) {
+func resolveAntigravityResponsesCompatibilityProfile(relayMode int, originModel string) (ResponsesCompatibilityProfile, bool) {
+	switch relayMode {
+	case relayconstant.RelayModeResponses:
+		switch originModel {
+		case "gpt-5.5", "gpt-5.5-mini":
+			return ResponsesCompatibilityProfile{
+				Name:         ResponsesCompatProfileStatelessV2AntigravityNoToolsGPT55,
+				Mode:         "stateless",
+				ForceNoTools: true,
+				ToolStrategy: "no_tools_gpt55",
+			}, true
+		case "gpt-5.4", "gpt-5.4-mini":
+			return ResponsesCompatibilityProfile{Name: ResponsesCompatProfileStatelessV2Antigravity, Mode: "stateless"}, true
+		}
+	case relayconstant.RelayModeResponsesCompact:
+		switch originModel {
+		case "gpt-5.5-openai-compact", "gpt-5.5-mini-openai-compact":
+			return ResponsesCompatibilityProfile{
+				Name:         ResponsesCompatProfileStatelessV2AntigravityNoToolsGPT55,
+				Mode:         "stateless",
+				ForceNoTools: true,
+				ToolStrategy: "no_tools_gpt55",
+			}, true
+		case "gpt-5.4-openai-compact", "gpt-5.4-mini-openai-compact":
+			return ResponsesCompatibilityProfile{Name: ResponsesCompatProfileStatelessV2Antigravity, Mode: "stateless"}, true
+		}
+	}
+	return ResponsesCompatibilityProfile{}, false
+}
+
+func applyStatelessResponsesCompatibility(request *dto.OpenAIResponsesRequest, result *ResponsesCompatibilityResult, profile ResponsesCompatibilityProfile) {
 	if request == nil || result == nil {
 		return
 	}
@@ -139,7 +176,7 @@ func applyStatelessResponsesCompatibility(request *dto.OpenAIResponsesRequest, r
 		result.RemovedFields = append(result.RemovedFields, "prompt_cache_retention")
 	}
 
-	if result.Profile == ResponsesCompatProfileStatelessV2Antigravity {
+	if result.Profile == ResponsesCompatProfileStatelessV2Antigravity || result.Profile == ResponsesCompatProfileStatelessV2AntigravityNoToolsGPT55 {
 		if hasRawMessageValue(request.Include) {
 			request.Include = nil
 			result.RemovedInclude = true
@@ -155,13 +192,26 @@ func applyStatelessResponsesCompatibility(request *dto.OpenAIResponsesRequest, r
 			result.RemovedParallelToolCall = true
 			result.RemovedFields = append(result.RemovedFields, "parallel_tool_calls")
 		}
+		if profile.ForceNoTools {
+			if toolCount := len(request.GetToolsMap()); toolCount > 0 {
+				request.Tools = nil
+				result.RemovedTools = true
+				result.RemovedToolItems += toolCount
+				result.RemovedFields = append(result.RemovedFields, "tools")
+			}
+			if hasRawMessageValue(request.ToolChoice) {
+				request.ToolChoice = nil
+				result.RemovedToolChoice = true
+				result.RemovedFields = append(result.RemovedFields, "tool_choice")
+			}
+		}
 	}
 
 	if normalizedInput, normalizeResult := normalizeResponsesInputToStateless(request.Input, result.Profile); normalizeResult.Normalized {
 		request.Input = normalizedInput
 		result.NormalizedInput = true
-		result.RemovedToolItems = normalizeResult.RemovedToolItems
-		result.RemovedHistoryItems = normalizeResult.RemovedHistoryItems
+		result.RemovedToolItems += normalizeResult.RemovedToolItems
+		result.RemovedHistoryItems += normalizeResult.RemovedHistoryItems
 		result.RemovedFields = append(result.RemovedFields, "input.stateful_history")
 	}
 
@@ -573,6 +623,10 @@ func recordResponsesCompatibilityResult(c *gin.Context, result ResponsesCompatib
 	common.SetContextKey(c, constant.ContextKeyResponsesCompatIncludeDropped, result.RemovedInclude)
 	common.SetContextKey(c, constant.ContextKeyResponsesCompatStoreDropped, result.RemovedStore)
 	common.SetContextKey(c, constant.ContextKeyResponsesCompatParallelToolsDropped, result.RemovedParallelToolCall)
+	common.SetContextKey(c, constant.ContextKeyResponsesCompatToolsDropped, result.RemovedTools)
+	common.SetContextKey(c, constant.ContextKeyResponsesCompatToolChoiceDropped, result.RemovedToolChoice)
+	common.SetContextKey(c, constant.ContextKeyResponsesCompatToolStrategy, result.ToolStrategy)
+	common.SetContextKey(c, constant.ContextKeyAntigravityResponsesToolsForcedOff, result.RemovedTools || result.RemovedToolChoice)
 	common.SetContextKey(c, constant.ContextKeyResponsesStateSanitized, result.Applied)
 	common.SetContextKey(c, constant.ContextKeyResponsesStateSanitizedFields, result.RemovedFields)
 	common.SetContextKey(c, constant.ContextKeyResponsesStateHadPreviousResponseID, result.HadPreviousResponseID)

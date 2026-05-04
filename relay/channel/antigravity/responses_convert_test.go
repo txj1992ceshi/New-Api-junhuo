@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 )
@@ -180,6 +181,60 @@ func TestBuildGeminiRequestFromResponsesIncludesSystemAndFunctionTools(t *testin
 	data, err := common.Marshal(tools[0].FunctionDeclarations)
 	require.NoError(t, err)
 	require.Contains(t, string(data), "apply_patch")
+}
+
+func TestBuildGeminiRequestFromResponsesNoToolsFor55Compatibility(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	info := &relaycommon.RelayInfo{
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelType:       58,
+			UpstreamModelName: "gpt-5.5",
+		},
+	}
+	req := dto.OpenAIResponsesRequest{
+		Model:        "gpt-5.5",
+		Instructions: mustMarshalRaw("system note"),
+		Input: mustMarshalRaw([]map[string]any{
+			{
+				"type": "message",
+				"role": "assistant",
+				"content": []map[string]any{
+					{"type": "output_text", "text": "tool call happened"},
+					{"type": "function_call", "name": "web_search", "call_id": "call_0", "arguments": "{}"},
+				},
+			},
+			{
+				"type": "message",
+				"role": "user",
+				"content": []map[string]any{
+					{"type": "input_text", "text": "write code"},
+				},
+			},
+		}),
+		ToolChoice: mustMarshalRaw("required"),
+		Tools: mustMarshalRaw([]map[string]any{
+			{
+				"type": "function",
+				"function": map[string]any{
+					"name": "apply_patch",
+				},
+			},
+		}),
+	}
+
+	compat := service.ApplyResponsesCompatibilityProfile(ctx, relayconstant.RelayModeResponses, constant.ChannelTypeAntigravity, "gpt-5.5", &req)
+	require.True(t, compat.RemovedTools)
+	require.True(t, compat.RemovedToolChoice)
+
+	geminiReq, err := buildGeminiRequestFromResponses(ctx, info, req)
+	require.NoError(t, err)
+	require.Nil(t, geminiReq.ToolConfig)
+	require.Empty(t, geminiReq.GetTools())
+	require.Len(t, geminiReq.Contents, 1)
+	require.Equal(t, "user", geminiReq.Contents[0].Role)
+	require.Equal(t, "write code", geminiReq.Contents[0].Parts[0].Text)
 }
 
 func TestBuildResponsesResponseFromGeminiProducesMessageAndFunctionCall(t *testing.T) {

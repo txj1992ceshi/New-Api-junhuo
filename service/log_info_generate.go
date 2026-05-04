@@ -91,6 +91,15 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatParallelToolsDropped) {
 			other["responses_compat_parallel_tool_calls_dropped"] = true
 		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatToolsDropped) {
+			other["responses_compat_tools_dropped"] = true
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatToolChoiceDropped) {
+			other["responses_compat_tool_choice_dropped"] = true
+		}
+		if strategy := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatToolStrategy); strategy != "" {
+			other["responses_compat_tool_strategy"] = strategy
+		}
 	}
 	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesStateSanitized) {
 		other["responses_state_sanitized"] = true
@@ -149,6 +158,12 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 		}
 		if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompatIncludeDropped) {
 			adminInfo["antigravity_responses_include_dropped"] = true
+		}
+		if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesToolsForcedOff) {
+			adminInfo["antigravity_responses_tools_forced_off"] = true
+		}
+		if strategy := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatToolStrategy); strategy != "" {
+			adminInfo["antigravity_responses_tool_strategy"] = strategy
 		}
 		if relayInfo != nil {
 			adminInfo["antigravity_responses_request_type"] = antigravityResponsesRequestType(relayInfo.RelayMode)
