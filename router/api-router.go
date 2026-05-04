@@ -245,6 +245,8 @@ func SetApiRouter(router *gin.Engine) {
 			channelRoute.GET("/:id/codex/usage", controller.GetCodexChannelUsage)
 			channelRoute.GET("/:id/codex/pool_health", controller.GetCodexPoolHealth)
 			channelRoute.GET("/:id/codex/replacement_status", controller.GetCursorProReplacementStatus)
+			channelRoute.GET("/:id/windsurf/pool_status", controller.GetWindsurfPoolStatus)
+			channelRoute.GET("/:id/windsurf/accounts", controller.GetWindsurfPoolAccounts)
 			channelRoute.POST("/ollama/pull", controller.OllamaPullModel)
 			channelRoute.POST("/ollama/pull/stream", controller.OllamaPullModelStream)
 			channelRoute.DELETE("/ollama/delete", controller.OllamaDeleteModel)

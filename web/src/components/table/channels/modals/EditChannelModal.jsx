@@ -66,6 +66,7 @@ import OllamaModelModal from './OllamaModelModal';
 import CodexOAuthModal from './CodexOAuthModal';
 import AntigravityOAuthModal from './AntigravityOAuthModal';
 import { openCodexUsageModal } from './CodexUsageModal';
+import { openWindsurfPoolModal } from './WindsurfPoolModal';
 import ParamOverrideEditorModal from './ParamOverrideEditorModal';
 import JSONEditor from '../../../common/ui/JSONEditor';
 import SecureVerificationModal from '../../../common/modals/SecureVerificationModal';
@@ -78,7 +79,11 @@ import {
   collectInvalidStatusCodeEntries,
   collectNewDisallowedStatusCodeRedirects,
 } from './statusCodeRiskGuard';
-import { isRemoteCodexPoolProxy } from '../channelCodexProxy';
+import {
+  getChannelAdminStatusKind,
+  isRemoteCodexPoolProxy,
+  isWindsurfPoolProxy,
+} from '../channelCodexProxy';
 import {
   IconSave,
   IconClose,
@@ -201,6 +206,7 @@ const EditChannelModal = (props) => {
     max_input_tokens: 0,
     base_url: '',
     other: '',
+    other_info: '',
     model_mapping: '',
     param_override: '',
     status_code_mapping: '',
@@ -212,6 +218,7 @@ const EditChannelModal = (props) => {
     weight: 0,
     tag: '',
     multi_key_mode: 'random',
+    windsurf_pool_proxy: false,
     // 渠道额外设置的默认值
     force_format: false,
     thinking_to_content: false,
@@ -1053,9 +1060,11 @@ const EditChannelModal = (props) => {
       initialStatusCodeMappingRef.current = data.status_code_mapping || '';
 
       let parsedIonet = null;
+      let parsedOtherInfo = null;
       if (data.other_info) {
         try {
           const maybeMeta = JSON.parse(data.other_info);
+          parsedOtherInfo = maybeMeta;
           if (
             maybeMeta &&
             typeof maybeMeta === 'object' &&
@@ -1067,6 +1076,8 @@ const EditChannelModal = (props) => {
           // ignore parse error
         }
       }
+      data.windsurf_pool_proxy =
+        parsedOtherInfo?.windsurf_pool_proxy === true;
       const managedByIonet = !!parsedIonet;
       setIsIonetChannel(managedByIonet);
       setIonetMetadata(parsedIonet);
@@ -1370,18 +1381,40 @@ const EditChannelModal = (props) => {
 
   const handleOpenCodexStatus = () => {
     if (!isEdit || !channelId) return;
-    openCodexUsageModal({
-      t,
-      record: {
-        id: channelId,
-        name: inputs.name,
-      },
-      onCopy: async (text) => {
-        const ok = await copy(text);
-        if (ok) showSuccess(t('已复制'));
-        else showError(t('复制失败'));
-      },
-    });
+    let otherInfo = inputs.other_info;
+    if (inputs.windsurf_pool_proxy === true) {
+      let parsedOtherInfo = {};
+      if (typeof inputs.other_info === 'string' && inputs.other_info.trim() !== '') {
+        try {
+          parsedOtherInfo = JSON.parse(inputs.other_info);
+        } catch (error) {
+          parsedOtherInfo = {};
+        }
+      }
+      otherInfo = JSON.stringify({
+        ...parsedOtherInfo,
+        windsurf_pool_proxy: true,
+      });
+    }
+    const record = {
+      id: channelId,
+      name: inputs.name,
+      type: inputs.type,
+      base_url: inputs.base_url,
+      other_info: otherInfo,
+    };
+    const adminStatusKind = getChannelAdminStatusKind(record);
+    const onCopy = async (text) => {
+      const ok = await copy(text);
+      if (ok) showSuccess(t('已复制'));
+      else showError(t('复制失败'));
+    };
+
+    if (adminStatusKind === 'windsurf') {
+      openWindsurfPoolModal({ t, record, onCopy });
+      return;
+    }
+    openCodexUsageModal({ t, record, onCopy });
   };
 
   const isRemoteCodexProxyEdit =
@@ -1392,6 +1425,16 @@ const EditChannelModal = (props) => {
       base_url: inputs.base_url,
       other_info: inputs.other_info,
     });
+
+  const isWindsurfProxyEdit =
+    isEdit &&
+    (inputs.windsurf_pool_proxy === true ||
+      isWindsurfPoolProxy({
+        id: channelId,
+        name: inputs.name,
+        base_url: inputs.base_url,
+        other_info: inputs.other_info,
+      }));
 
   useEffect(() => {
     if (inputs.type !== 45) {
@@ -1890,6 +1933,28 @@ const EditChannelModal = (props) => {
       localInputs.other = 'v2.1';
     }
 
+    let otherInfo = {};
+    if (typeof localInputs.other_info === 'string' && localInputs.other_info.trim() !== '') {
+      try {
+        otherInfo = JSON.parse(localInputs.other_info);
+      } catch (error) {
+        showError(t('渠道元数据必须是合法的 JSON 格式'));
+        return;
+      }
+    }
+    if (!otherInfo || typeof otherInfo !== 'object' || Array.isArray(otherInfo)) {
+      otherInfo = {};
+    }
+    if (localInputs.windsurf_pool_proxy === true) {
+      otherInfo.windsurf_pool_proxy = true;
+    } else {
+      delete otherInfo.windsurf_pool_proxy;
+    }
+    localInputs.other_info =
+      Object.keys(otherInfo).length > 0
+        ? JSON.stringify(otherInfo)
+        : '';
+
     // 生成渠道额外设置JSON
     const channelExtraSettings = {
       force_format: localInputs.force_format || false,
@@ -2027,6 +2092,7 @@ const EditChannelModal = (props) => {
     delete localInputs.upstream_model_update_ignored_models;
     delete localInputs.responses_model_mapping;
     delete localInputs.responses_compact_model_mapping;
+    delete localInputs.windsurf_pool_proxy;
 
     let res;
     localInputs.auto_ban = localInputs.auto_ban ? 1 : 0;
@@ -2373,7 +2439,10 @@ const EditChannelModal = (props) => {
               </Title>
             </Space>
             <Space>
-              {isEdit && (inputs.type === 57 || isRemoteCodexProxyEdit) && (
+              {isEdit &&
+                (inputs.type === 57 ||
+                  isRemoteCodexProxyEdit ||
+                  isWindsurfProxyEdit) && (
                 <Button
                   size='small'
                   type='tertiary'
@@ -3960,6 +4029,22 @@ const EditChannelModal = (props) => {
                                 />
                               </div>
                             )}
+
+                          {inputs.type === 1 && (
+                            <Form.Switch
+                              field='windsurf_pool_proxy'
+                              label={t('Windsurf 池代理')}
+                              checkedText={t('开')}
+                              uncheckedText={t('关')}
+                              initValue={inputs.windsurf_pool_proxy}
+                              onChange={(value) =>
+                                handleInputChange('windsurf_pool_proxy', value)
+                              }
+                              extraText={t(
+                                '开启后，此渠道会显示 Windsurf 帐号/池状态面板，并通过当前 API 地址和密钥读取池信息',
+                              )}
+                            />
+                          )}
 
                           {inputs.type === 22 && (
                             <div>

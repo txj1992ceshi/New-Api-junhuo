@@ -121,6 +121,21 @@ func injectRemoteCodexPoolSummary(ctx context.Context, channel *model.Channel) {
 	}
 }
 
+func injectWindsurfPoolSummary(ctx context.Context, channel *model.Channel) {
+	if channel == nil {
+		return
+	}
+	if _, ok := service.ResolveWindsurfPoolProxy(channel); !ok {
+		return
+	}
+	summary, err := service.GetWindsurfPoolSummary(ctx, channel)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to load windsurf pool summary: channel_id=%d err=%v", channel.Id, err))
+		return
+	}
+	channel.WindsurfPoolSummary = summary
+}
+
 func GetAllChannels(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	channelData := make([]*model.Channel, 0)
@@ -205,6 +220,7 @@ func GetAllChannels(c *gin.Context) {
 	defer cancel()
 	for _, datum := range channelData {
 		injectRemoteCodexPoolSummary(enrichCtx, datum)
+		injectWindsurfPoolSummary(enrichCtx, datum)
 	}
 
 	countQuery := model.DB.Model(&model.Channel{})
@@ -409,6 +425,7 @@ func SearchChannels(c *gin.Context) {
 	defer cancel()
 	for _, datum := range pagedData {
 		injectRemoteCodexPoolSummary(enrichCtx, datum)
+		injectWindsurfPoolSummary(enrichCtx, datum)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -441,6 +458,7 @@ func GetChannel(c *gin.Context) {
 			markRemoteCodexPoolProxy(channel)
 			injectRemoteCodexPoolSummary(c.Request.Context(), channel)
 		}
+		injectWindsurfPoolSummary(c.Request.Context(), channel)
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

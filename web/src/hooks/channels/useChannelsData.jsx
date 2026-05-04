@@ -39,7 +39,10 @@ import { useChannelUpstreamUpdates } from './useChannelUpstreamUpdates';
 import { parseUpstreamUpdateMeta } from './upstreamUpdateUtils';
 import { Modal, Button } from '@douyinfe/semi-ui';
 import { openCodexUsageModal } from '../../components/table/channels/modals/CodexUsageModal';
-import { isCodexStatusCapableChannel } from '../../components/table/channels/channelCodexProxy';
+import { openWindsurfPoolModal } from '../../components/table/channels/modals/WindsurfPoolModal';
+import {
+  getChannelAdminStatusKind,
+} from '../../components/table/channels/channelCodexProxy';
 
 export const useChannelsData = () => {
   const { t } = useTranslation();
@@ -755,8 +758,21 @@ export const useChannelsData = () => {
   };
 
   const updateChannelBalance = async (record) => {
-    if (isCodexStatusCapableChannel(record)) {
+    const adminStatusKind = getChannelAdminStatusKind(record);
+    if (adminStatusKind === 'codex') {
       openCodexUsageModal({
+        t,
+        record,
+        onCopy: async (text) => {
+          const ok = await copy(text);
+          if (ok) showSuccess(t('已复制'));
+          else showError(t('复制失败'));
+        },
+      });
+      return;
+    }
+    if (adminStatusKind === 'windsurf') {
+      openWindsurfPoolModal({
         t,
         record,
         onCopy: async (text) => {

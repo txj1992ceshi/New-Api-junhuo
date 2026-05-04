@@ -33,5 +33,26 @@ export const isRemoteCodexPoolProxy = (record) => {
   );
 };
 
+export const isWindsurfPoolProxy = (record) => {
+  if (!record) {
+    return false;
+  }
+  const otherInfo = parseChannelOtherInfo(record);
+  return otherInfo.windsurf_pool_proxy === true;
+};
+
 export const isCodexStatusCapableChannel = (record) =>
   Number(record?.type) === 57 || isRemoteCodexPoolProxy(record);
+
+export const getChannelAdminStatusKind = (record) => {
+  if (isCodexStatusCapableChannel(record)) {
+    return 'codex';
+  }
+  if (isWindsurfPoolProxy(record)) {
+    return 'windsurf';
+  }
+  return null;
+};
+
+export const isAdminStatusCapableChannel = (record) =>
+  getChannelAdminStatusKind(record) !== null;

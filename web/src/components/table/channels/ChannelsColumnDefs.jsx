@@ -51,6 +51,8 @@ import {
 } from '@douyinfe/semi-icons';
 import { FaRandom } from 'react-icons/fa';
 import {
+  getChannelAdminStatusKind,
+  isAdminStatusCapableChannel,
   isCodexStatusCapableChannel,
   isRemoteCodexPoolProxy,
 } from './channelCodexProxy';
@@ -179,6 +181,23 @@ const getStatusLabel = (status, t) => {
 };
 
 const renderStatus = (status, record = undefined, t) => {
+  const adminStatusKind = getChannelAdminStatusKind(record);
+  if (adminStatusKind === 'codex' && record?.codex_pool_summary) {
+    return renderMultiKeyStatus(
+      status,
+      record?.codex_pool_summary?.total_count,
+      record,
+      t,
+    );
+  }
+  if (adminStatusKind === 'windsurf' && record?.windsurf_pool_summary) {
+    return renderMultiKeyStatus(
+      status,
+      record?.windsurf_pool_summary?.total_count,
+      record,
+      t,
+    );
+  }
   const channelInfo = record?.channel_info;
   if (channelInfo) {
     if (channelInfo.is_multi_key) {
@@ -195,6 +214,7 @@ const renderStatus = (status, record = undefined, t) => {
 
 const renderMultiKeyStatus = (status, keySize, record, t) => {
   const codexSummary = record?.codex_pool_summary;
+  const windsurfSummary = record?.windsurf_pool_summary;
   const statusLabel = getStatusLabel(status, t);
 
   if (isCodexStatusCapableChannel(record) && codexSummary) {
@@ -202,6 +222,15 @@ const renderMultiKeyStatus = (status, keySize, record, t) => {
       <Tag color={getStatusColor(status)} shape='circle'>
         {statusLabel} · {t('可用')} {codexSummary.available_count} · {t('库存')}{' '}
         {codexSummary.total_count || keySize}
+      </Tag>
+    );
+  }
+
+  if (getChannelAdminStatusKind(record) === 'windsurf' && windsurfSummary) {
+    return (
+      <Tag color={getStatusColor(status)} shape='circle'>
+        {statusLabel} · {t('可用')} {windsurfSummary.available_count} · {t('库存')}{' '}
+        {windsurfSummary.total_count || keySize}
       </Tag>
     );
   }
@@ -523,7 +552,8 @@ export const getChannelsColumns = ({
       title: t('已用/剩余'),
       dataIndex: 'expired_time',
       render: (text, record, index) => {
-        const codexStatusCapable = isCodexStatusCapableChannel(record);
+        const adminStatusKind = getChannelAdminStatusKind(record);
+        const adminStatusCapable = isAdminStatusCapableChannel(record);
         if (record.children === undefined) {
           return (
             <div>
@@ -535,8 +565,10 @@ export const getChannelsColumns = ({
                 </Tooltip>
                 <Tooltip
                   content={
-                    codexStatusCapable
-                      ? t('查看 Codex 帐号信息与用量')
+                    adminStatusCapable
+                      ? adminStatusKind === 'windsurf'
+                        ? t('查看 Windsurf 帐号信息与池状态')
+                        : t('查看 Codex 帐号信息与用量')
                       : t('剩余额度') +
                         ': ' +
                         renderQuotaWithAmount(record.balance) +
@@ -544,13 +576,13 @@ export const getChannelsColumns = ({
                   }
                 >
                   <Tag
-                    color={codexStatusCapable ? 'light-blue' : 'white'}
-                    type={codexStatusCapable ? 'light' : 'ghost'}
+                    color={adminStatusCapable ? 'light-blue' : 'white'}
+                    type={adminStatusCapable ? 'light' : 'ghost'}
                     shape='circle'
-                    className={codexStatusCapable ? 'cursor-pointer' : ''}
+                    className={adminStatusCapable ? 'cursor-pointer' : ''}
                     onClick={() => updateChannelBalance(record)}
                   >
-                    {codexStatusCapable
+                    {adminStatusCapable
                       ? t('帐号信息')
                       : renderQuotaWithAmount(record.balance)}
                   </Tag>
