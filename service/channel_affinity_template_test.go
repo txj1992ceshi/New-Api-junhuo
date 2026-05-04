@@ -8,7 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -144,6 +148,21 @@ func TestShouldSkipRetryAfterChannelAffinityFailure(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "antigravity protocol incompatible ignores skip retry",
+			ctx: func() *gin.Context {
+				ctx := buildChannelAffinityTemplateContextForTest(channelAffinityMeta{
+					RuleName:   "rule-antigravity-protocol",
+					SkipRetry:  true,
+					UsingGroup: "default",
+					ModelName:  "gpt-5.5",
+				})
+				common.SetContextKey(ctx, constant.ContextKeyChannelType, constant.ChannelTypeAntigravity)
+				common.SetContextKey(ctx, constant.ContextKeyAntigravityErrorClass, string(AntigravityErrorClassProtocolIncompatible))
+				return ctx
+			},
+			want: false,
+		},
+		{
 			name: "fallback to matched rule meta",
 			ctx: func() *gin.Context {
 				return buildChannelAffinityTemplateContextForTest(channelAffinityMeta{
@@ -174,6 +193,52 @@ func TestShouldSkipRetryAfterChannelAffinityFailure(t *testing.T) {
 			require.Equal(t, tt.want, ShouldSkipRetryAfterChannelAffinityFailure(tt.ctx()))
 		})
 	}
+}
+
+func TestIsCodexCLIResponsesRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tests := []struct {
+		name string
+		path string
+		method string
+		originator string
+		want bool
+	}{
+		{name: "codex responses", path: "/v1/responses", method: http.MethodPost, originator: "Codex CLI", want: true},
+		{name: "codex compact responses", path: "/v1/responses/compact", method: http.MethodPost, originator: "Codex CLI/0.1", want: true},
+		{name: "non codex originator", path: "/v1/responses", method: http.MethodPost, originator: "Other Client", want: false},
+		{name: "wrong method", path: "/v1/responses", method: http.MethodGet, originator: "Codex CLI", want: false},
+		{name: "wrong path", path: "/v1/chat/completions", method: http.MethodPost, originator: "Codex CLI", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(rec)
+			ctx.Request = httptest.NewRequest(tt.method, tt.path, nil)
+			if tt.originator != "" {
+				ctx.Request.Header.Set("Originator", tt.originator)
+			}
+			require.Equal(t, tt.want, IsCodexCLIResponsesRequest(ctx))
+		})
+	}
+}
+
+func TestShouldAvoidAntigravityForCodexResponses(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ctx.Request.Header.Set("Originator", "Codex CLI")
+
+	antigravityChannel := &model.Channel{Type: constant.ChannelTypeAntigravity}
+	openAIChannel := &model.Channel{Type: constant.ChannelTypeOpenAI}
+
+	require.True(t, ShouldAvoidAntigravityForCodexResponses(ctx, antigravityChannel, relayconstant.RelayModeResponses))
+	require.True(t, ShouldAvoidAntigravityForCodexResponses(ctx, antigravityChannel, relayconstant.RelayModeResponsesCompact))
+	require.False(t, ShouldAvoidAntigravityForCodexResponses(ctx, antigravityChannel, relayconstant.RelayModeChatCompletions))
+	require.False(t, ShouldAvoidAntigravityForCodexResponses(ctx, openAIChannel, relayconstant.RelayModeResponses))
 }
 
 func TestChannelAffinityHitCodexTemplatePassHeadersEffective(t *testing.T) {

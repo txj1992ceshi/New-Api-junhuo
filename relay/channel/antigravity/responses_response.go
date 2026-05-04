@@ -2,6 +2,7 @@ package antigravity
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -181,13 +182,12 @@ func antigravityResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 			if latestResponse != nil {
 				setAntigravityResponsesStreamContext(c, state)
 				if shouldFailAntigravityResponsesEmptyStream(state, latestResponse, usage) {
-					common.SetContextKey(c, constant.ContextKeyAntigravityResponsesEmptyStream, true)
-					common.SetContextKey(c, constant.ContextKeyAntigravityResponsesEmptyReason, antigravityEmptyStreamReason(state))
-					if usage != nil && usage.OutputTokens >= 0 {
-						common.SetContextKey(c, constant.ContextKeyAntigravityResponsesCompletionToken, usage.OutputTokens)
-					}
+					setAntigravityResponsesEmptyFailureContext(c, state, usage)
 					logger.LogInfo(c, fmt.Sprintf("antigravity responses empty stream detected: request_path=%s origin_model_name=%s upstream_model_name=%s reason=%s candidates=%d completion_tokens=%d finish_reasons=%s",
 						info.RequestURLPath, info.OriginModelName, info.UpstreamModelName, antigravityEmptyStreamReason(state), state.candidateCount, usage.OutputTokens, summarizeFinishReasons(state.finishReasons)))
+					streamErr = types.NewOpenAIError(errors.New("Antigravity Responses compatibility empty output"), types.ErrorCodeBadResponse, http.StatusBadGateway)
+					sr.Stop(streamErr.Err)
+					return
 				}
 				fillMissingResponsesText(latestResponse, aggregatedText.String())
 				event := dto.ResponsesStreamResponse{
@@ -204,7 +204,7 @@ func antigravityResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 	})
 
 	if streamErr != nil {
-		return nil, streamErr
+		return usage, streamErr
 	}
 	return usage, nil
 }

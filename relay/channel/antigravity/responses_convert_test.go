@@ -440,13 +440,16 @@ func TestAntigravityResponsesStreamHandlerFailsEmptyStream(t *testing.T) {
 
 	usage, apiErr := antigravityResponsesStreamHandler(ctx, info, resp)
 	require.NotNil(t, usage)
-	require.Nil(t, apiErr)
+	require.NotNil(t, apiErr)
+	require.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+	require.Contains(t, apiErr.Error(), "Antigravity Responses compatibility empty output")
 	require.Contains(t, rec.Body.String(), "event: response.created")
 	require.NotContains(t, rec.Body.String(), "event: response.failed")
-	require.Contains(t, rec.Body.String(), "event: response.completed")
+	require.NotContains(t, rec.Body.String(), "event: response.completed")
 	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesEmptyStream))
-	require.False(t, common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesFailedAsEmpty))
+	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesFailedAsEmpty))
 	require.Equal(t, "no_visible_assistant_output", common.GetContextKeyString(ctx, constant.ContextKeyAntigravityResponsesEmptyReason))
+	require.Equal(t, string(service.AntigravityErrorClassProtocolIncompatible), common.GetContextKeyString(ctx, constant.ContextKeyAntigravityErrorClass))
 }
 
 func TestAntigravityResponsesStreamHandlerKeepsSuccessfulTextStream(t *testing.T) {
