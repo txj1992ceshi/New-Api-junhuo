@@ -265,7 +265,7 @@ func normalizeResponsesInputToStateless(raw json.RawMessage, profile string) (js
 		return raw, responsesInputNormalizationResult{}
 	}
 
-	if profile == ResponsesCompatProfileStatelessV2Antigravity {
+	if profile == ResponsesCompatProfileStatelessV2Antigravity || profile == ResponsesCompatProfileStatelessV2AntigravityNoToolsGPT55 {
 		return normalizeResponsesInputForAntigravity(items, raw)
 	}
 

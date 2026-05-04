@@ -2,6 +2,7 @@ package service
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,6 +104,41 @@ func TestApplyResponsesCompatibilityProfileAntigravity55StatelessTranscript(t *t
 	var input []map[string]any
 	require.NoError(t, common.Unmarshal(req.Input, &input))
 	require.NotEmpty(t, input)
+	// Codex sends developer + assistant history; gpt-5.5 Antigravity profile must use
+	// normalizeResponsesInputForAntigravity (not the generic stateless branch that drops non-user roles).
+	var sawDeveloper, sawAssistant bool
+	for _, it := range input {
+		if strings.TrimSpace(common.Interface2String(it["type"])) != "message" {
+			continue
+		}
+		role := strings.TrimSpace(common.Interface2String(it["role"]))
+		parts, ok := it["content"].([]any)
+		if !ok {
+			continue
+		}
+		var sb strings.Builder
+		for _, p := range parts {
+			pm, ok := p.(map[string]any)
+			if !ok {
+				continue
+			}
+			if strings.TrimSpace(common.Interface2String(pm["type"])) == "input_text" {
+				sb.WriteString(common.Interface2String(pm["text"]))
+			}
+		}
+		text := sb.String()
+		switch role {
+		case "developer":
+			sawDeveloper = true
+			require.Contains(t, text, "you are codex")
+		case "assistant":
+			sawAssistant = true
+			require.Contains(t, text, "old assistant text")
+			require.Contains(t, text, "tool_call=web_search")
+		}
+	}
+	require.True(t, sawDeveloper, "gpt-5.5 antigravity: developer transcript must survive normalization")
+	require.True(t, sawAssistant, "gpt-5.5 antigravity: assistant transcript must survive normalization")
 	require.Equal(t, "message", input[len(input)-1]["type"])
 	require.Equal(t, "user", input[len(input)-1]["role"])
 	lastContent := input[len(input)-1]["content"].([]any)
