@@ -52,10 +52,21 @@ type Channel struct {
 	// add after v0.8.5
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
 
+	CodexPoolSummary *CodexPoolSummary `json:"codex_pool_summary,omitempty" gorm:"-"`
+
 	OtherSettings string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
 
 	// cache info
 	Keys []string `json:"-" gorm:"-"`
+}
+
+type CodexPoolSummary struct {
+	AvailableCount int `json:"available_count"`
+	HealthyCount   int `json:"healthy_count"`
+	CooldownCount  int `json:"cooldown_count"`
+	SuspectCount   int `json:"suspect_count"`
+	DeadCount      int `json:"dead_count"`
+	TotalCount     int `json:"total_count"`
 }
 
 type ChannelInfo struct {

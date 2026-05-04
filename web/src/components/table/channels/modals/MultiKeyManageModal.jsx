@@ -47,14 +47,57 @@ import {
   showSuccess,
   timestamp2string,
 } from '../../../../helpers';
+import { isCodexStatusCapableChannel } from '../channelCodexProxy';
 
 const { Text } = Typography;
+
+const StatCard = ({
+  label,
+  value,
+  total,
+  color,
+  badgeType,
+  progressPercent,
+}) => (
+  <div
+    style={{
+      background: 'var(--semi-color-bg-0)',
+      border: '1px solid var(--semi-color-border)',
+      borderRadius: 12,
+      padding: 12,
+    }}
+  >
+    <div className='flex items-center gap-2 mb-2'>
+      <Badge dot type={badgeType} />
+      <Text type='tertiary'>{label}</Text>
+    </div>
+    <div className='flex items-end gap-2 mb-2'>
+      <Text style={{ fontSize: 18, fontWeight: 700, color }}>{value}</Text>
+      {typeof total === 'number' && (
+        <Text style={{ fontSize: 18, color: 'var(--semi-color-text-2)' }}>
+          / {total}
+        </Text>
+      )}
+    </div>
+    {typeof progressPercent === 'number' && (
+      <Progress
+        percent={progressPercent}
+        showInfo={false}
+        size='small'
+        stroke={color}
+        style={{ height: 6, borderRadius: 999 }}
+      />
+    )}
+  </div>
+);
 
 const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
   const [keyStatusList, setKeyStatusList] = useState([]);
   const [operationLoading, setOperationLoading] = useState({});
+  const [poolHealth, setPoolHealth] = useState(null);
+  const [poolHealthError, setPoolHealthError] = useState('');
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1);
@@ -117,6 +160,34 @@ const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
     }
   };
 
+  const loadPoolHealth = async () => {
+    if (!channel?.id || !isCodexStatusCapableChannel(channel)) {
+      setPoolHealth(null);
+      setPoolHealthError('');
+      return;
+    }
+    try {
+      const res = await API.get(
+        `/api/channel/${channel.id}/codex/pool_health`,
+        {
+          skipErrorHandler: true,
+        },
+      );
+      if (res.data?.success) {
+        setPoolHealth(res.data.data || null);
+        setPoolHealthError('');
+      } else {
+        setPoolHealth(null);
+        setPoolHealthError(res.data?.message || t('获取运行态失败'));
+      }
+    } catch (error) {
+      setPoolHealth(null);
+      setPoolHealthError(
+        error?.response?.data?.message || error?.message || t('获取运行态失败'),
+      );
+    }
+  };
+
   // Disable a specific key
   const handleDisableKey = async (keyIndex) => {
     const operationId = `disable_${keyIndex}`;
@@ -132,6 +203,7 @@ const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
       if (res.data.success) {
         showSuccess(t('密钥已禁用'));
         await loadKeyStatus(currentPage, pageSize); // Reload current page
+        await loadPoolHealth();
         onRefresh && onRefresh(); // Refresh parent component
       } else {
         showError(res.data.message);
@@ -158,6 +230,7 @@ const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
       if (res.data.success) {
         showSuccess(t('密钥已启用'));
         await loadKeyStatus(currentPage, pageSize); // Reload current page
+        await loadPoolHealth();
         onRefresh && onRefresh(); // Refresh parent component
       } else {
         showError(res.data.message);
@@ -184,6 +257,7 @@ const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
         // Reset to first page after bulk operation
         setCurrentPage(1);
         await loadKeyStatus(1, pageSize);
+        await loadPoolHealth();
         onRefresh && onRefresh(); // Refresh parent component
       } else {
         showError(res.data.message);
@@ -210,6 +284,7 @@ const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
         // Reset to first page after bulk operation
         setCurrentPage(1);
         await loadKeyStatus(1, pageSize);
+        await loadPoolHealth();
         onRefresh && onRefresh(); // Refresh parent component
       } else {
         showError(res.data.message);
@@ -236,6 +311,7 @@ const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
         // Reset to first page after deletion as data structure might change
         setCurrentPage(1);
         await loadKeyStatus(1, pageSize);
+        await loadPoolHealth();
         onRefresh && onRefresh(); // Refresh parent component
       } else {
         showError(res.data.message);
@@ -262,6 +338,7 @@ const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
       if (res.data.success) {
         showSuccess(t('密钥已删除'));
         await loadKeyStatus(currentPage, pageSize); // Reload current page
+        await loadPoolHealth();
         onRefresh && onRefresh(); // Refresh parent component
       } else {
         showError(res.data.message);
@@ -298,6 +375,7 @@ const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
     if (visible && channel?.id) {
       setCurrentPage(1); // Reset to first page when opening
       loadKeyStatus(1, pageSize);
+      loadPoolHealth();
     }
   }, [visible, channel?.id]);
 
@@ -312,6 +390,8 @@ const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
       setManualDisabledCount(0);
       setAutoDisabledCount(0);
       setStatusFilter(null); // Reset filter
+      setPoolHealth(null);
+      setPoolHealthError('');
     }
   }, [visible]);
 
@@ -322,6 +402,46 @@ const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
     total > 0 ? Math.round((manualDisabledCount / total) * 100) : 0;
   const autoDisabledPercent =
     total > 0 ? Math.round((autoDisabledCount / total) * 100) : 0;
+  const runtimeAvailable = poolHealth?.health?.available_count ?? 0;
+  const runtimeHealthy =
+    (poolHealth?.health?.healthy ?? 0) + (poolHealth?.health?.new ?? 0);
+  const runtimeCooldown = poolHealth?.health?.cooldown ?? 0;
+  const runtimeSuspect = poolHealth?.health?.suspect ?? 0;
+  const runtimeDead = poolHealth?.health?.dead ?? 0;
+  const runtimeRefreshing = poolHealth?.health?.refreshing ?? 0;
+  const hasRuntimeHealth =
+    isCodexStatusCapableChannel(channel) && !!poolHealth?.health;
+  const runtimeTotalCount =
+    poolHealth?.health?.total ??
+    poolHealth?.health?.Total ??
+    poolHealth?.health?.total_count ??
+    poolHealth?.health?.TotalCount ??
+    total;
+
+  const runtimeAvailablePercent =
+    runtimeTotalCount > 0
+      ? Math.round((runtimeAvailable / runtimeTotalCount) * 100)
+      : 0;
+  const runtimeHealthyPercent =
+    runtimeTotalCount > 0
+      ? Math.round((runtimeHealthy / runtimeTotalCount) * 100)
+      : 0;
+  const runtimeCooldownPercent =
+    runtimeTotalCount > 0
+      ? Math.round((runtimeCooldown / runtimeTotalCount) * 100)
+      : 0;
+  const runtimeSuspectPercent =
+    runtimeTotalCount > 0
+      ? Math.round((runtimeSuspect / runtimeTotalCount) * 100)
+      : 0;
+  const runtimeDeadPercent =
+    runtimeTotalCount > 0
+      ? Math.round((runtimeDead / runtimeTotalCount) * 100)
+      : 0;
+  const runtimeRefreshingPercent =
+    runtimeTotalCount > 0
+      ? Math.round((runtimeRefreshing / runtimeTotalCount) * 100)
+      : 0;
 
   // 取消饼图：不再需要图表数据与配置
 
@@ -463,7 +583,7 @@ const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
             </Tag>
           )}
           <Tag size='small' shape='circle' color='white'>
-            {t('总密钥数')}: {total}
+            {t('总库存')}: {total}
           </Tag>
           {channel?.channel_info?.multi_key_mode && (
             <Tag size='small' shape='circle' color='white'>
@@ -490,108 +610,116 @@ const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
         >
           <Row gutter={16} align='middle'>
             <Col span={8}>
-              <div
-                style={{
-                  background: 'var(--semi-color-bg-0)',
-                  border: '1px solid var(--semi-color-border)',
-                  borderRadius: 12,
-                  padding: 12,
-                }}
-              >
-                <div className='flex items-center gap-2 mb-2'>
-                  <Badge dot type='success' />
-                  <Text type='tertiary'>{t('已启用')}</Text>
-                </div>
-                <div className='flex items-end gap-2 mb-2'>
-                  <Text
-                    style={{ fontSize: 18, fontWeight: 700, color: '#22c55e' }}
-                  >
-                    {enabledCount}
-                  </Text>
-                  <Text
-                    style={{ fontSize: 18, color: 'var(--semi-color-text-2)' }}
-                  >
-                    / {total}
-                  </Text>
-                </div>
-                <Progress
-                  percent={enabledPercent}
-                  showInfo={false}
-                  size='small'
-                  stroke='#22c55e'
-                  style={{ height: 6, borderRadius: 999 }}
-                />
-              </div>
+              <StatCard
+                label={t('已启用')}
+                value={enabledCount}
+                total={total}
+                color='#22c55e'
+                badgeType='success'
+                progressPercent={enabledPercent}
+              />
             </Col>
             <Col span={8}>
-              <div
-                style={{
-                  background: 'var(--semi-color-bg-0)',
-                  border: '1px solid var(--semi-color-border)',
-                  borderRadius: 12,
-                  padding: 12,
-                }}
-              >
-                <div className='flex items-center gap-2 mb-2'>
-                  <Badge dot type='danger' />
-                  <Text type='tertiary'>{t('手动禁用')}</Text>
-                </div>
-                <div className='flex items-end gap-2 mb-2'>
-                  <Text
-                    style={{ fontSize: 18, fontWeight: 700, color: '#ef4444' }}
-                  >
-                    {manualDisabledCount}
-                  </Text>
-                  <Text
-                    style={{ fontSize: 18, color: 'var(--semi-color-text-2)' }}
-                  >
-                    / {total}
-                  </Text>
-                </div>
-                <Progress
-                  percent={manualDisabledPercent}
-                  showInfo={false}
-                  size='small'
-                  stroke='#ef4444'
-                  style={{ height: 6, borderRadius: 999 }}
-                />
-              </div>
+              <StatCard
+                label={t('手动禁用')}
+                value={manualDisabledCount}
+                total={total}
+                color='#ef4444'
+                badgeType='danger'
+                progressPercent={manualDisabledPercent}
+              />
             </Col>
             <Col span={8}>
-              <div
-                style={{
-                  background: 'var(--semi-color-bg-0)',
-                  border: '1px solid var(--semi-color-border)',
-                  borderRadius: 12,
-                  padding: 12,
-                }}
-              >
-                <div className='flex items-center gap-2 mb-2'>
-                  <Badge dot type='warning' />
-                  <Text type='tertiary'>{t('自动禁用')}</Text>
-                </div>
-                <div className='flex items-end gap-2 mb-2'>
-                  <Text
-                    style={{ fontSize: 18, fontWeight: 700, color: '#f59e0b' }}
-                  >
-                    {autoDisabledCount}
-                  </Text>
-                  <Text
-                    style={{ fontSize: 18, color: 'var(--semi-color-text-2)' }}
-                  >
-                    / {total}
-                  </Text>
-                </div>
-                <Progress
-                  percent={autoDisabledPercent}
-                  showInfo={false}
-                  size='small'
-                  stroke='#f59e0b'
-                  style={{ height: 6, borderRadius: 999 }}
-                />
-              </div>
+              <StatCard
+                label={t('自动禁用')}
+                value={autoDisabledCount}
+                total={total}
+                color='#f59e0b'
+                badgeType='warning'
+                progressPercent={autoDisabledPercent}
+              />
             </Col>
           </Row>
+          {isCodexStatusCapableChannel(channel) && (
+            <>
+              <div className='mt-4 mb-2'>
+                <Text type='tertiary'>
+                  {t('运行态统计')} ·{' '}
+                  {t('以下数值反映当前 token 可用性，不等于后台启用状态')}
+                </Text>
+              </div>
+              {hasRuntimeHealth ? (
+                <Row gutter={[16, 16]}>
+                  <Col span={8}>
+                    <StatCard
+                      label={t('可用')}
+                      value={runtimeAvailable}
+                      total={runtimeTotalCount}
+                      color='#2563eb'
+                      badgeType='primary'
+                      progressPercent={runtimeAvailablePercent}
+                    />
+                  </Col>
+                  <Col span={8}>
+                    <StatCard
+                      label={t('健康')}
+                      value={runtimeHealthy}
+                      total={runtimeTotalCount}
+                      color='#16a34a'
+                      badgeType='success'
+                      progressPercent={runtimeHealthyPercent}
+                    />
+                  </Col>
+                  <Col span={8}>
+                    <StatCard
+                      label={t('冷却')}
+                      value={runtimeCooldown}
+                      total={runtimeTotalCount}
+                      color='#f59e0b'
+                      badgeType='warning'
+                      progressPercent={runtimeCooldownPercent}
+                    />
+                  </Col>
+                  <Col span={8}>
+                    <StatCard
+                      label={t('疑似')}
+                      value={runtimeSuspect}
+                      total={runtimeTotalCount}
+                      color='#8b5cf6'
+                      badgeType='primary'
+                      progressPercent={runtimeSuspectPercent}
+                    />
+                  </Col>
+                  <Col span={8}>
+                    <StatCard
+                      label={t('失效')}
+                      value={runtimeDead}
+                      total={runtimeTotalCount}
+                      color='#dc2626'
+                      badgeType='danger'
+                      progressPercent={runtimeDeadPercent}
+                    />
+                  </Col>
+                  <Col span={8}>
+                    <StatCard
+                      label={t('刷新中')}
+                      value={runtimeRefreshing}
+                      total={runtimeTotalCount}
+                      color='#0f766e'
+                      badgeType='primary'
+                      progressPercent={runtimeRefreshingPercent}
+                    />
+                  </Col>
+                </Row>
+              ) : (
+                <div className='mt-2'>
+                  <Text type='danger'>
+                    {poolHealthError || t('获取运行态失败')}
+                  </Text>
+                </div>
+              )}
+            </>
+          )}
         </div>
 
         {/* Table */}
@@ -634,7 +762,10 @@ const MultiKeyManageModal = ({ visible, onCancel, channel, onRefresh }) => {
                         <Button
                           size='small'
                           type='tertiary'
-                          onClick={() => loadKeyStatus(currentPage, pageSize)}
+                          onClick={async () => {
+                            await loadKeyStatus(currentPage, pageSize);
+                            await loadPoolHealth();
+                          }}
                           loading={loading}
                         >
                           {t('刷新')}

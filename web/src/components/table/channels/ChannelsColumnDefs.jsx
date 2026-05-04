@@ -50,7 +50,10 @@ import {
   IconAlertTriangle,
 } from '@douyinfe/semi-icons';
 import { FaRandom } from 'react-icons/fa';
-import { isCodexStatusCapableChannel, isRemoteCodexPoolProxy } from './channelCodexProxy';
+import {
+  isCodexStatusCapableChannel,
+  isRemoteCodexPoolProxy,
+} from './channelCodexProxy';
 
 // Render functions
 const renderType = (type, record = {}, t) => {
@@ -149,73 +152,65 @@ const renderTagType = (t) => {
   );
 };
 
-const renderStatus = (status, channelInfo = undefined, t) => {
-  if (channelInfo) {
-    if (channelInfo.is_multi_key) {
-      let keySize = channelInfo.multi_key_size;
-      let enabledKeySize = keySize;
-      if (channelInfo.multi_key_status_list) {
-        enabledKeySize =
-          keySize - Object.keys(channelInfo.multi_key_status_list).length;
-      }
-      return renderMultiKeyStatus(status, keySize, enabledKeySize, t);
-    }
-  }
+const getStatusColor = (status) => {
   switch (status) {
     case 1:
-      return (
-        <Tag color='green' shape='circle'>
-          {t('已启用')}
-        </Tag>
-      );
+      return 'green';
     case 2:
-      return (
-        <Tag color='red' shape='circle'>
-          {t('已禁用')}
-        </Tag>
-      );
+      return 'red';
     case 3:
-      return (
-        <Tag color='yellow' shape='circle'>
-          {t('自动禁用')}
-        </Tag>
-      );
+      return 'yellow';
     default:
-      return (
-        <Tag color='grey' shape='circle'>
-          {t('未知状态')}
-        </Tag>
-      );
+      return 'grey';
   }
 };
 
-const renderMultiKeyStatus = (status, keySize, enabledKeySize, t) => {
+const getStatusLabel = (status, t) => {
   switch (status) {
     case 1:
-      return (
-        <Tag color='green' shape='circle'>
-          {t('已启用')} {enabledKeySize}/{keySize}
-        </Tag>
-      );
+      return t('已启用');
     case 2:
-      return (
-        <Tag color='red' shape='circle'>
-          {t('已禁用')} {enabledKeySize}/{keySize}
-        </Tag>
-      );
+      return t('已禁用');
     case 3:
-      return (
-        <Tag color='yellow' shape='circle'>
-          {t('自动禁用')} {enabledKeySize}/{keySize}
-        </Tag>
-      );
+      return t('自动禁用');
     default:
-      return (
-        <Tag color='grey' shape='circle'>
-          {t('未知状态')} {enabledKeySize}/{keySize}
-        </Tag>
-      );
+      return t('未知状态');
   }
+};
+
+const renderStatus = (status, record = undefined, t) => {
+  const channelInfo = record?.channel_info;
+  if (channelInfo) {
+    if (channelInfo.is_multi_key) {
+      let keySize = channelInfo.multi_key_size;
+      return renderMultiKeyStatus(status, keySize, record, t);
+    }
+  }
+  return (
+    <Tag color={getStatusColor(status)} shape='circle'>
+      {getStatusLabel(status, t)}
+    </Tag>
+  );
+};
+
+const renderMultiKeyStatus = (status, keySize, record, t) => {
+  const codexSummary = record?.codex_pool_summary;
+  const statusLabel = getStatusLabel(status, t);
+
+  if (isCodexStatusCapableChannel(record) && codexSummary) {
+    return (
+      <Tag color={getStatusColor(status)} shape='circle'>
+        {statusLabel} · {t('可用')} {codexSummary.available_count} · {t('库存')}{' '}
+        {codexSummary.total_count || keySize}
+      </Tag>
+    );
+  }
+
+  return (
+    <Tag color={getStatusColor(status)} shape='circle'>
+      {statusLabel} · {t('库存')} {keySize}
+    </Tag>
+  );
 };
 
 const renderResponseTime = (responseTime, t) => {
@@ -508,12 +503,12 @@ export const getChannelsColumns = ({
                   t('原因：') + reason + t('，时间：') + timestamp2string(time)
                 }
               >
-                {renderStatus(text, record.channel_info, t)}
+                {renderStatus(text, record, t)}
               </Tooltip>
             </div>
           );
         } else {
-          return renderStatus(text, record.channel_info, t);
+          return renderStatus(text, record, t);
         }
       },
     },

@@ -68,6 +68,28 @@ func clearChannelInfo(channel *model.Channel) {
 	}
 }
 
+func injectCodexPoolSummary(channel *model.Channel) {
+	if channel == nil {
+		return
+	}
+	if channel.Type != constant.ChannelTypeCodex {
+		return
+	}
+	health := service.ComputeCodexPoolHealth(channel, time.Now())
+	if health == nil {
+		channel.CodexPoolSummary = nil
+		return
+	}
+	channel.CodexPoolSummary = &model.CodexPoolSummary{
+		AvailableCount: health.AvailableCount,
+		HealthyCount:   health.Healthy + health.New,
+		CooldownCount:  health.Cooldown,
+		SuspectCount:   health.Suspect,
+		DeadCount:      health.Dead,
+		TotalCount:     health.Total,
+	}
+}
+
 func markRemoteCodexPoolProxy(channel *model.Channel) {
 	if channel == nil {
 		return
@@ -93,6 +115,9 @@ func injectRemoteCodexPoolSummary(ctx context.Context, channel *model.Channel) {
 	if summary != nil && summary.ChannelInfo != nil {
 		channel.ChannelInfo = *summary.ChannelInfo
 		clearChannelInfo(channel)
+	}
+	if summary != nil {
+		channel.CodexPoolSummary = summary.CodexPoolSummary
 	}
 }
 
@@ -174,6 +199,7 @@ func GetAllChannels(c *gin.Context) {
 
 	for _, datum := range channelData {
 		clearChannelInfo(datum)
+		injectCodexPoolSummary(datum)
 	}
 	enrichCtx, cancel := context.WithTimeout(c.Request.Context(), 12*time.Second)
 	defer cancel()
@@ -377,6 +403,7 @@ func SearchChannels(c *gin.Context) {
 
 	for _, datum := range pagedData {
 		clearChannelInfo(datum)
+		injectCodexPoolSummary(datum)
 	}
 	enrichCtx, cancel := context.WithTimeout(c.Request.Context(), 12*time.Second)
 	defer cancel()
@@ -409,8 +436,10 @@ func GetChannel(c *gin.Context) {
 	}
 	if channel != nil {
 		clearChannelInfo(channel)
+		injectCodexPoolSummary(channel)
 		if _, ok := service.ResolveRemoteCodexPoolProxy(channel); ok {
 			markRemoteCodexPoolProxy(channel)
+			injectRemoteCodexPoolSummary(c.Request.Context(), channel)
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{

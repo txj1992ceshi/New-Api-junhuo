@@ -30,7 +30,8 @@ type RemoteCodexPoolProxy struct {
 }
 
 type RemoteCodexPoolChannelSummary struct {
-	ChannelInfo *model.ChannelInfo `json:"channel_info,omitempty"`
+	ChannelInfo      *model.ChannelInfo      `json:"channel_info,omitempty"`
+	CodexPoolSummary *model.CodexPoolSummary `json:"codex_pool_summary,omitempty"`
 }
 
 func parseRemoteCodexPoolInt(raw string) int {
@@ -239,6 +240,7 @@ func GetRemoteCodexPoolChannelSummary(ctx context.Context, channel *model.Channe
 		return nil, fmt.Errorf("remote codex channel not found")
 	}
 	return &RemoteCodexPoolChannelSummary{
-		ChannelInfo: &resp.Data.ChannelInfo,
+		ChannelInfo:      &resp.Data.ChannelInfo,
+		CodexPoolSummary: resp.Data.CodexPoolSummary,
 	}, nil
 }
