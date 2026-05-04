@@ -439,13 +439,13 @@ func TestAntigravityResponsesStreamHandlerFailsEmptyStream(t *testing.T) {
 	}
 
 	usage, apiErr := antigravityResponsesStreamHandler(ctx, info, resp)
-	require.Nil(t, usage)
-	require.Error(t, apiErr)
+	require.NotNil(t, usage)
+	require.Nil(t, apiErr)
 	require.Contains(t, rec.Body.String(), "event: response.created")
-	require.Contains(t, rec.Body.String(), "event: response.failed")
-	require.NotContains(t, rec.Body.String(), "event: response.completed")
+	require.NotContains(t, rec.Body.String(), "event: response.failed")
+	require.Contains(t, rec.Body.String(), "event: response.completed")
 	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesEmptyStream))
-	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesFailedAsEmpty))
+	require.False(t, common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesFailedAsEmpty))
 	require.Equal(t, "no_visible_assistant_output", common.GetContextKeyString(ctx, constant.ContextKeyAntigravityResponsesEmptyReason))
 }
 

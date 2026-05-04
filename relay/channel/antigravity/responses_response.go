@@ -181,31 +181,13 @@ func antigravityResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayIn
 			if latestResponse != nil {
 				setAntigravityResponsesStreamContext(c, state)
 				if shouldFailAntigravityResponsesEmptyStream(state, latestResponse, usage) {
-					setAntigravityResponsesEmptyFailureContext(c, state, usage)
-					openaiErr := types.OpenAIError{
-						Message: "Antigravity Responses compatibility empty output",
-						Type:    string(types.ErrorCodeBadResponse),
-						Code:    "antigravity_empty_output",
-					}
-					latestResponse.Status = mustMarshalRaw("failed")
-					latestResponse.Error = openaiErr
-					latestResponse.IncompleteDetails = &dto.IncompleteDetails{
-						Reasoning: "empty_output",
-					}
-					event := dto.ResponsesStreamResponse{
-						Type:     "response.failed",
-						Response: latestResponse,
-					}
-					if err := sendEvent(event); err != nil {
-						streamErr = types.NewOpenAIError(err, types.ErrorCodeBadResponse, http.StatusInternalServerError, types.ErrOptionWithSkipRetry())
-						sr.Stop(streamErr)
-						return
+					common.SetContextKey(c, constant.ContextKeyAntigravityResponsesEmptyStream, true)
+					common.SetContextKey(c, constant.ContextKeyAntigravityResponsesEmptyReason, antigravityEmptyStreamReason(state))
+					if usage != nil && usage.OutputTokens >= 0 {
+						common.SetContextKey(c, constant.ContextKeyAntigravityResponsesCompletionToken, usage.OutputTokens)
 					}
 					logger.LogInfo(c, fmt.Sprintf("antigravity responses empty stream detected: request_path=%s origin_model_name=%s upstream_model_name=%s reason=%s candidates=%d completion_tokens=%d finish_reasons=%s",
 						info.RequestURLPath, info.OriginModelName, info.UpstreamModelName, antigravityEmptyStreamReason(state), state.candidateCount, usage.OutputTokens, summarizeFinishReasons(state.finishReasons)))
-					streamErr = types.WithOpenAIError(openaiErr, http.StatusBadGateway, types.ErrOptionWithSkipRetry())
-					sr.Stop(streamErr)
-					return
 				}
 				fillMissingResponsesText(latestResponse, aggregatedText.String())
 				event := dto.ResponsesStreamResponse{
