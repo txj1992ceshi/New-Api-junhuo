@@ -199,11 +199,11 @@ func TestIsCodexCLIResponsesRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name string
-		path string
-		method string
+		name       string
+		path       string
+		method     string
 		originator string
-		want bool
+		want       bool
 	}{
 		{name: "codex responses", path: "/v1/responses", method: http.MethodPost, originator: "Codex CLI", want: true},
 		{name: "codex compact responses", path: "/v1/responses/compact", method: http.MethodPost, originator: "Codex CLI/0.1", want: true},
@@ -225,20 +225,46 @@ func TestIsCodexCLIResponsesRequest(t *testing.T) {
 	}
 }
 
-func TestShouldAvoidAntigravityForCodexResponses(t *testing.T) {
+func TestChannelTypeSupportsCodexResponses(t *testing.T) {
+	require.True(t, ChannelTypeSupportsCodexResponses(constant.ChannelTypeCodex, relayconstant.RelayModeResponses))
+	require.True(t, ChannelTypeSupportsCodexResponses(constant.ChannelTypeOpenAI, relayconstant.RelayModeResponses))
+	require.True(t, ChannelTypeSupportsCodexResponses(constant.ChannelTypeAzure, relayconstant.RelayModeResponsesCompact))
+	require.True(t, ChannelTypeSupportsCodexResponses(constant.ChannelTypeCustom, relayconstant.RelayModeResponses))
+	require.True(t, ChannelTypeSupportsCodexResponses(constant.ChannelTypeOpenRouter, relayconstant.RelayModeResponses))
+	require.False(t, ChannelTypeSupportsCodexResponses(constant.ChannelTypeAntigravity, relayconstant.RelayModeResponses))
+	require.False(t, ChannelTypeSupportsCodexResponses(constant.ChannelTypeGemini, relayconstant.RelayModeResponses))
+	require.True(t, ChannelTypeSupportsCodexResponses(constant.ChannelTypeAntigravity, relayconstant.RelayModeChatCompletions))
+}
+
+func TestChannelSupportsCodexResponsesRequest(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 	ctx.Request.Header.Set("Originator", "Codex CLI")
 
-	antigravityChannel := &model.Channel{Type: constant.ChannelTypeAntigravity}
+	antigravityChannelA := &model.Channel{Type: constant.ChannelTypeAntigravity}
+	antigravityChannelB := &model.Channel{Type: constant.ChannelTypeAntigravity}
 	openAIChannel := &model.Channel{Type: constant.ChannelTypeOpenAI}
+	codexChannel := &model.Channel{Type: constant.ChannelTypeCodex}
 
-	require.True(t, ShouldAvoidAntigravityForCodexResponses(ctx, antigravityChannel, relayconstant.RelayModeResponses))
-	require.True(t, ShouldAvoidAntigravityForCodexResponses(ctx, antigravityChannel, relayconstant.RelayModeResponsesCompact))
-	require.False(t, ShouldAvoidAntigravityForCodexResponses(ctx, antigravityChannel, relayconstant.RelayModeChatCompletions))
-	require.False(t, ShouldAvoidAntigravityForCodexResponses(ctx, openAIChannel, relayconstant.RelayModeResponses))
+	require.False(t, ChannelSupportsCodexResponsesRequest(ctx, antigravityChannelA, relayconstant.RelayModeResponses))
+	require.False(t, ChannelSupportsCodexResponsesRequest(ctx, antigravityChannelB, relayconstant.RelayModeResponsesCompact))
+	require.True(t, ChannelSupportsCodexResponsesRequest(ctx, antigravityChannelA, relayconstant.RelayModeChatCompletions))
+	require.True(t, ChannelSupportsCodexResponsesRequest(ctx, openAIChannel, relayconstant.RelayModeResponses))
+	require.True(t, ChannelSupportsCodexResponsesRequest(ctx, codexChannel, relayconstant.RelayModeResponses))
+}
+
+func TestChannelSupportsCodexResponsesRequestNonCodexClient(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ctx.Request.Header.Set("Originator", "Telegram Bot")
+
+	antigravityChannel := &model.Channel{Type: constant.ChannelTypeAntigravity}
+
+	require.True(t, ChannelSupportsCodexResponsesRequest(ctx, antigravityChannel, relayconstant.RelayModeResponses))
 }
 
 func TestChannelAffinityHitCodexTemplatePassHeadersEffective(t *testing.T) {

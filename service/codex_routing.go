@@ -10,6 +10,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+var codexResponsesSupportedChannelTypes = map[int]bool{
+	constant.ChannelTypeCodex:      true,
+	constant.ChannelTypeOpenAI:     true,
+	constant.ChannelTypeAzure:      true,
+	constant.ChannelTypeCustom:     true,
+	constant.ChannelTypeOpenRouter: true,
+	constant.ChannelTypeXinference: true,
+	constant.ChannelCloudflare:     true,
+	constant.ChannelTypeAli:        true,
+	constant.ChannelTypeVolcEngine: true,
+	constant.ChannelTypePerplexity: true,
+	constant.ChannelTypeXai:        true,
+}
+
 func IsCodexCLIResponsesRequest(c *gin.Context) bool {
 	if c == nil || c.Request == nil || c.Request.URL == nil {
 		return false
@@ -26,12 +40,27 @@ func IsCodexCLIResponsesRequest(c *gin.Context) bool {
 	return strings.Contains(strings.ToLower(originator), "codex cli")
 }
 
-func ShouldAvoidAntigravityForCodexResponses(c *gin.Context, ch *model.Channel, relayMode int) bool {
-	if ch == nil || ch.Type != constant.ChannelTypeAntigravity {
+func IsCodexResponsesRelayMode(relayMode int) bool {
+	return relayMode == relayconstant.RelayModeResponses || relayMode == relayconstant.RelayModeResponsesCompact
+}
+
+func ChannelTypeSupportsCodexResponses(channelType int, relayMode int) bool {
+	if !IsCodexResponsesRelayMode(relayMode) {
+		return true
+	}
+	supported, ok := codexResponsesSupportedChannelTypes[channelType]
+	if !ok {
 		return false
 	}
-	if relayMode != relayconstant.RelayModeResponses && relayMode != relayconstant.RelayModeResponsesCompact {
+	return supported
+}
+
+func ChannelSupportsCodexResponsesRequest(c *gin.Context, ch *model.Channel, relayMode int) bool {
+	if ch == nil {
 		return false
 	}
-	return IsCodexCLIResponsesRequest(c)
+	if !IsCodexCLIResponsesRequest(c) {
+		return true
+	}
+	return ChannelTypeSupportsCodexResponses(ch.Type, relayMode)
 }

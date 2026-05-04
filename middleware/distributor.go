@@ -108,9 +108,9 @@ func Distribute() func(c *gin.Context) {
 								abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
 								return
 							}
-						} else if !service.ChannelSupportsRequestedModelForRelay(preferred, relayMode, modelRequest.Model) {
+						} else if !service.ChannelSupportsCodexResponsesRequest(c, preferred, relayMode) {
 							preferred = nil
-						} else if service.ShouldAvoidAntigravityForCodexResponses(c, preferred, relayMode) {
+						} else if !service.ChannelSupportsRequestedModelForRelay(preferred, relayMode, modelRequest.Model) {
 							preferred = nil
 						} else if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)

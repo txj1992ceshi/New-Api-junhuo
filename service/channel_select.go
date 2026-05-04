@@ -87,15 +87,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	selectGroup := param.TokenGroup
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
 	relayMode := relayconstant.Path2RelayMode(param.Ctx.Request.URL.Path)
-	preferNonAntigravity := IsCodexCLIResponsesRequest(param.Ctx)
 	channelPredicate := func(ch *model.Channel) bool {
-		return ChannelSupportsRequestedModelForRelay(ch, relayMode, param.ModelName)
-	}
-	preferredChannelPredicate := channelPredicate
-	if preferNonAntigravity {
-		preferredChannelPredicate = func(ch *model.Channel) bool {
-			return channelPredicate(ch) && !ShouldAvoidAntigravityForCodexResponses(param.Ctx, ch, relayMode)
-		}
+		return ChannelSupportsCodexResponsesRequest(param.Ctx, ch, relayMode) &&
+			ChannelSupportsRequestedModelForRelay(ch, relayMode, param.ModelName)
 	}
 
 	if param.TokenGroup == "auto" {
@@ -127,10 +121,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannelFiltered(autoGroup, param.ModelName, priorityRetry, preferredChannelPredicate)
-			if channel == nil && preferNonAntigravity {
-				channel, _ = model.GetRandomSatisfiedChannelFiltered(autoGroup, param.ModelName, priorityRetry, channelPredicate)
-			}
+			channel, _ = model.GetRandomSatisfiedChannelFiltered(autoGroup, param.ModelName, priorityRetry, channelPredicate)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -172,10 +163,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannelFiltered(param.TokenGroup, param.ModelName, param.GetRetry(), preferredChannelPredicate)
-		if channel == nil && err == nil && preferNonAntigravity {
-			channel, err = model.GetRandomSatisfiedChannelFiltered(param.TokenGroup, param.ModelName, param.GetRetry(), channelPredicate)
-		}
+		channel, err = model.GetRandomSatisfiedChannelFiltered(param.TokenGroup, param.ModelName, param.GetRetry(), channelPredicate)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}
