@@ -2,14 +2,14 @@
 
 本文档记录一份“此刻线上是什么样”的状态快照，用于减少接手时对聊天记录的依赖。
 
-> 记录时间：`2026-05-04 09:04 CST`
+> 记录时间：`2026-05-04 15:43 CST`
 
 ## 1. 容器运行状态
 
 当前线上容器：
 
 - 容器名：`new-api`
-- 镜像：`new-api:antigravity-silent-empty-8611c8be`
+- 镜像：`new-api:codex-responses-capability-81208e85`
 - 状态：`Up`
 
 当前部署仍是：
@@ -59,10 +59,11 @@
 
 与此快照直接相关的近期背景：
 
-1. Antigravity `/responses` 曾被改成空流显式失败
-2. 随后又按运维需要回退成“无回复但不显式抛错”
-3. `openclaw2` 已具备多账号 OAuth 追加能力
-4. Win Codex 与 Antigravity 的 `/v1/responses` 兼容问题仍未视为彻底解决
+1. `openclaw2` 已具备多账号 OAuth 追加能力
+2. Win Codex 与 Antigravity 的 `/v1/responses` 协议兼容问题仍未视为彻底解决
+3. 当前线上已将真实 `Codex CLI /v1/responses(/compact)` 改为先走“按渠道类型生效”的能力矩阵
+4. 因此 `Antigravity(type=58)` 默认不再参与真实 Codex `/responses` 候选链
+5. Antigravity 仍保留给 QQbot / Telegram / 常规 `chat/completions`
 
 ## 5. 参考文档
 

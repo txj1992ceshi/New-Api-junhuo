@@ -187,6 +187,25 @@ docker run --name new-api -d --restart always \
 - [`junhuo` 发布记录](./docs/junhuo-release-log.md)
 - [Antigravity / Codex 兼容笔记](./docs/junhuo-antigravity-codex-notes.md)
 
+### `junhuo` 当前机制补充
+
+当前这套 `junhuo` 定制部署里，有一条和上游默认行为不同、但对实际运维很关键的规则：
+
+- 对真实 `Win Codex / Codex CLI` 发出的 `POST /v1/responses` 与 `/v1/responses/compact`
+- 服务端会先走一层“按渠道类型生效”的默认能力矩阵
+- `type=58` 的 Antigravity 渠道默认不参与这条候选链
+- `type=57` 的 Codex 渠道，以及已支持真实 Responses 的 OpenAI-compatible 渠道，才会继续进入后续选路
+
+这样做的目的不是否定 Antigravity 本身，而是把职责拆清：
+
+- Antigravity 继续服务 QQbot / Telegram / 常规 `chat/completions`
+- Codex 的真实 `/responses` 主链优先交给已经验证更稳定的非 Antigravity 渠道
+
+这层规则按“渠道类型”生效，而不是按具体渠道名生效，所以：
+
+- 以后新增同类型渠道实例，不需要再改代码
+- 只有未来新增“全新渠道类型”时，才需要在统一能力矩阵里补一次声明
+
 ---
 
 ## ✨ 主要特性

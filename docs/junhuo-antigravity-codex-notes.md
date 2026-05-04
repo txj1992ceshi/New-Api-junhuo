@@ -121,6 +121,27 @@
 - Antigravity 可继续服务 QQbot / Telegram / 常规聊天链路
 - 若 Codex 主链要求稳定，应优先使用已验证更稳的非 Antigravity 渠道
 
+## 6.1 当前已落地的分流机制
+
+为避免再次出现：
+
+- Antigravity 先承接真实 Codex `/v1/responses`
+- 进入 SSE 后才暴露兼容异常
+- 导致 failover 既慢又不稳定
+
+当前代码已将这条策略前移到“发请求前”的选路阶段：
+
+- 若请求被识别为真实 `Codex CLI` 的 `/v1/responses` 或 `/v1/responses/compact`
+- 会先过一层按渠道类型生效的能力矩阵
+- `Antigravity(type=58)` 默认直接跳过
+- `Codex(type=57)` 与已支持真实 Responses 的 OpenAI-compatible 类型才进入后续模型与优先级筛选
+
+这意味着：
+
+- 当前对 Codex 主链的默认策略不是“继续尝试让 Antigravity 承接”
+- 而是“在候选选择阶段就绕开它”
+- Antigravity 仍保留给 QQbot / Telegram / `chat/completions`
+
 ## 7. 后续继续修复时应优先寻找的证据
 
 如果未来继续推进这条线，优先寻找：
