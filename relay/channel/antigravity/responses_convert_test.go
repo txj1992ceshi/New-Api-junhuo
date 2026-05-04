@@ -2,7 +2,10 @@ package antigravity
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -338,4 +341,111 @@ func TestConvertOpenAIResponsesRequestReusesChatEnvelopePath(t *testing.T) {
 	require.Equal(t, "user", respEnvelope.Request.SystemInstructions.Role)
 	require.Equal(t, 1, len(respEnvelope.Request.Contents))
 	require.Equal(t, "Say hello.", respEnvelope.Request.Contents[0].Parts[0].Text)
+}
+
+func TestAntigravityResponsesStreamHandlerFailsEmptyStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 1
+	defer func() {
+		constant.StreamingTimeout = oldTimeout
+	}()
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+	ctx.Set(common.RequestIdKey, "req-empty")
+
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-5.5",
+		RequestURLPath: "/v1/responses",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-3-flash",
+		},
+	}
+	info.SetEstimatePromptTokens(12)
+	stop := "STOP"
+
+	chunk, err := common.Marshal(dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{
+			{
+				Content: dto.GeminiChatContent{Role: "model"},
+				FinishReason: &stop,
+			},
+		},
+		UsageMetadata: dto.GeminiUsageMetadata{
+			PromptTokenCount:     12,
+			CandidatesTokenCount: 0,
+			TotalTokenCount:      12,
+		},
+	})
+	require.NoError(t, err)
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader("data: " + string(chunk) + "\n\n")),
+	}
+
+	usage, apiErr := antigravityResponsesStreamHandler(ctx, info, resp)
+	require.Nil(t, usage)
+	require.Error(t, apiErr)
+	require.Contains(t, rec.Body.String(), "event: response.created")
+	require.Contains(t, rec.Body.String(), "event: response.failed")
+	require.NotContains(t, rec.Body.String(), "event: response.completed")
+	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesEmptyStream))
+	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesFailedAsEmpty))
+	require.Equal(t, "no_visible_assistant_output", common.GetContextKeyString(ctx, constant.ContextKeyAntigravityResponsesEmptyReason))
+}
+
+func TestAntigravityResponsesStreamHandlerKeepsSuccessfulTextStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 1
+	defer func() {
+		constant.StreamingTimeout = oldTimeout
+	}()
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+	ctx.Set(common.RequestIdKey, "req-ok")
+
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "gpt-5.5",
+		RequestURLPath: "/v1/responses",
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName: "gemini-3-flash",
+		},
+	}
+	info.SetEstimatePromptTokens(10)
+	stop := "STOP"
+
+	chunk, err := common.Marshal(dto.GeminiChatResponse{
+		Candidates: []dto.GeminiChatCandidate{
+			{
+				Content: dto.GeminiChatContent{
+					Role: "model",
+					Parts: []dto.GeminiPart{{Text: "hello from antigravity"}},
+				},
+				FinishReason: &stop,
+			},
+		},
+		UsageMetadata: dto.GeminiUsageMetadata{
+			PromptTokenCount:     10,
+			CandidatesTokenCount: 4,
+			TotalTokenCount:      14,
+		},
+	})
+	require.NoError(t, err)
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader("data: " + string(chunk) + "\n\n")),
+	}
+
+	usage, apiErr := antigravityResponsesStreamHandler(ctx, info, resp)
+	require.Nil(t, apiErr, "%+v", apiErr)
+	require.NotNil(t, usage)
+	require.Equal(t, 4, usage.OutputTokens)
+	require.Contains(t, rec.Body.String(), "event: response.created")
+	require.Contains(t, rec.Body.String(), "event: response.output_text.delta")
+	require.Contains(t, rec.Body.String(), "event: response.completed")
+	require.NotContains(t, rec.Body.String(), "event: response.failed")
+	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesTextDelta))
+	require.True(t, common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesVisibleOutput))
+	require.False(t, common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesEmptyStream))
 }

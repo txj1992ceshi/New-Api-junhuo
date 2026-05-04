@@ -157,6 +157,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 			}
 		}
 	}
+	AppendAntigravityResponsesStreamAdminInfo(ctx, adminInfo)
 	if class := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityErrorClass); class != "" && class == string(AntigravityErrorClassProtocolIncompatible) {
 		adminInfo["antigravity_protocol_incompatible"] = true
 	}
@@ -176,6 +177,54 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	appendParamOverrideInfo(relayInfo, other)
 	appendStreamStatus(relayInfo, other)
 	return other
+}
+
+func AppendAntigravityResponsesStreamAdminInfo(ctx *gin.Context, adminInfo map[string]interface{}) {
+	if ctx == nil || adminInfo == nil {
+		return
+	}
+	if !common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesStreamCreated) &&
+		!common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesTextDelta) &&
+		!common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesItemDone) &&
+		!common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesVisibleOutput) &&
+		!common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesEmptyStream) &&
+		!common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesFailedAsEmpty) &&
+		common.GetContextKeyString(ctx, constant.ContextKeyAntigravityResponsesEmptyReason) == "" &&
+		common.GetContextKeyString(ctx, constant.ContextKeyAntigravityResponsesFinishSummary) == "" &&
+		common.GetContextKeyInt(ctx, constant.ContextKeyAntigravityResponsesCandidateCount) == 0 &&
+		common.GetContextKeyInt(ctx, constant.ContextKeyAntigravityResponsesCompletionToken) == 0 {
+		return
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesStreamCreated) {
+		adminInfo["antigravity_responses_stream_created_emitted"] = true
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesTextDelta) {
+		adminInfo["antigravity_responses_text_delta_emitted"] = true
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesItemDone) {
+		adminInfo["antigravity_responses_item_done_emitted"] = true
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesVisibleOutput) {
+		adminInfo["antigravity_responses_visible_output_present"] = true
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesEmptyStream) {
+		adminInfo["antigravity_responses_empty_stream_detected"] = true
+	}
+	if reason := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityResponsesEmptyReason); reason != "" {
+		adminInfo["antigravity_responses_empty_stream_reason"] = reason
+	}
+	if summary := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityResponsesFinishSummary); summary != "" {
+		adminInfo["antigravity_responses_finish_reason_summary"] = summary
+	}
+	if count := common.GetContextKeyInt(ctx, constant.ContextKeyAntigravityResponsesCandidateCount); count > 0 {
+		adminInfo["antigravity_responses_candidate_count"] = count
+	}
+	if completionTokens := common.GetContextKeyInt(ctx, constant.ContextKeyAntigravityResponsesCompletionToken); completionTokens > 0 {
+		adminInfo["antigravity_responses_completion_tokens"] = completionTokens
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesFailedAsEmpty) {
+		adminInfo["antigravity_responses_failed_as_empty"] = true
+	}
 }
 
 func antigravityResponsesRequestType(relayMode int) string {
