@@ -11,7 +11,6 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
-	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/cachex"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -621,10 +620,6 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 
 func ShouldSkipRetryAfterChannelAffinityFailure(c *gin.Context) bool {
 	if c == nil {
-		return false
-	}
-	if common.GetContextKeyInt(c, constant.ContextKeyChannelType) == constant.ChannelTypeAntigravity &&
-		common.GetContextKeyString(c, constant.ContextKeyAntigravityErrorClass) == string(AntigravityErrorClassProtocolIncompatible) {
 		return false
 	}
 	v, ok := c.Get(ginKeyChannelAffinitySkipRetry)

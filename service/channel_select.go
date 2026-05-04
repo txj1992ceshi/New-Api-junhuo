@@ -88,8 +88,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
 	relayMode := relayconstant.Path2RelayMode(param.Ctx.Request.URL.Path)
 	channelPredicate := func(ch *model.Channel) bool {
-		return ChannelSupportsCodexResponsesRequest(param.Ctx, ch, relayMode) &&
-			ChannelSupportsRequestedModelForRelay(ch, relayMode, param.ModelName)
+		return ChannelSupportsRequestedModelForRelay(ch, relayMode, param.ModelName)
 	}
 
 	if param.TokenGroup == "auto" {

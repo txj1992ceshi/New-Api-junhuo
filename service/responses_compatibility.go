@@ -12,14 +12,10 @@ import (
 )
 
 const ResponsesCompatProfileStatelessV1 = "stateless_responses_v1"
-const ResponsesCompatProfileStatelessV2Antigravity = "responses_stateless_v2_antigravity"
-const ResponsesCompatProfileStatelessV2AntigravityNoToolsGPT55 = "responses_stateless_v2_antigravity_no_tools_gpt55"
 
 type ResponsesCompatibilityProfile struct {
-	Name         string
-	Mode         string
-	ForceNoTools bool
-	ToolStrategy string
+	Name string
+	Mode string
 }
 
 type ResponsesCompatibilityResult struct {
@@ -83,7 +79,6 @@ func ApplyResponsesCompatibilityProfile(c *gin.Context, relayMode int, channelTy
 
 	result.Profile = profile.Name
 	result.Mode = profile.Mode
-	result.ToolStrategy = profile.ToolStrategy
 
 	applyStatelessResponsesCompatibility(request, &result, profile)
 	result.Applied = len(result.RemovedFields) > 0 || result.NormalizedInput
@@ -97,11 +92,6 @@ func resolveResponsesCompatibilityProfile(relayMode int, originModel string, cha
 	if originModel == "" {
 		return ResponsesCompatibilityProfile{}, false
 	}
-	if channelType == constant.ChannelTypeAntigravity {
-		if profile, ok := resolveAntigravityResponsesCompatibilityProfile(relayMode, originModel); ok {
-			return profile, true
-		}
-	}
 	profiles, ok := responsesCompatibilityProfiles[relayMode]
 	if !ok {
 		return ResponsesCompatibilityProfile{}, false
@@ -112,36 +102,6 @@ func resolveResponsesCompatibilityProfile(relayMode int, originModel string, cha
 	}
 	_ = channelType
 	return profile, true
-}
-
-func resolveAntigravityResponsesCompatibilityProfile(relayMode int, originModel string) (ResponsesCompatibilityProfile, bool) {
-	switch relayMode {
-	case relayconstant.RelayModeResponses:
-		switch originModel {
-		case "gpt-5.5", "gpt-5.5-mini":
-			return ResponsesCompatibilityProfile{
-				Name:         ResponsesCompatProfileStatelessV2AntigravityNoToolsGPT55,
-				Mode:         "stateless",
-				ForceNoTools: true,
-				ToolStrategy: "no_tools_gpt55",
-			}, true
-		case "gpt-5.4", "gpt-5.4-mini":
-			return ResponsesCompatibilityProfile{Name: ResponsesCompatProfileStatelessV2Antigravity, Mode: "stateless"}, true
-		}
-	case relayconstant.RelayModeResponsesCompact:
-		switch originModel {
-		case "gpt-5.5-openai-compact", "gpt-5.5-mini-openai-compact":
-			return ResponsesCompatibilityProfile{
-				Name:         ResponsesCompatProfileStatelessV2AntigravityNoToolsGPT55,
-				Mode:         "stateless",
-				ForceNoTools: true,
-				ToolStrategy: "no_tools_gpt55",
-			}, true
-		case "gpt-5.4-openai-compact", "gpt-5.4-mini-openai-compact":
-			return ResponsesCompatibilityProfile{Name: ResponsesCompatProfileStatelessV2Antigravity, Mode: "stateless"}, true
-		}
-	}
-	return ResponsesCompatibilityProfile{}, false
 }
 
 func applyStatelessResponsesCompatibility(request *dto.OpenAIResponsesRequest, result *ResponsesCompatibilityResult, profile ResponsesCompatibilityProfile) {
@@ -174,37 +134,6 @@ func applyStatelessResponsesCompatibility(request *dto.OpenAIResponsesRequest, r
 	if result.HadPromptCacheRetention {
 		request.PromptCacheRetention = nil
 		result.RemovedFields = append(result.RemovedFields, "prompt_cache_retention")
-	}
-
-	if result.Profile == ResponsesCompatProfileStatelessV2Antigravity || result.Profile == ResponsesCompatProfileStatelessV2AntigravityNoToolsGPT55 {
-		if hasRawMessageValue(request.Include) {
-			request.Include = nil
-			result.RemovedInclude = true
-			result.RemovedFields = append(result.RemovedFields, "include")
-		}
-		if hasRawMessageValue(request.Store) {
-			request.Store = nil
-			result.RemovedStore = true
-			result.RemovedFields = append(result.RemovedFields, "store")
-		}
-		if hasRawMessageValue(request.ParallelToolCalls) {
-			request.ParallelToolCalls = nil
-			result.RemovedParallelToolCall = true
-			result.RemovedFields = append(result.RemovedFields, "parallel_tool_calls")
-		}
-		if profile.ForceNoTools {
-			if toolCount := len(request.GetToolsMap()); toolCount > 0 {
-				request.Tools = nil
-				result.RemovedTools = true
-				result.RemovedToolItems += toolCount
-				result.RemovedFields = append(result.RemovedFields, "tools")
-			}
-			if hasRawMessageValue(request.ToolChoice) {
-				request.ToolChoice = nil
-				result.RemovedToolChoice = true
-				result.RemovedFields = append(result.RemovedFields, "tool_choice")
-			}
-		}
 	}
 
 	if normalizedInput, normalizeResult := normalizeResponsesInputToStateless(request.Input, result.Profile); normalizeResult.Normalized {
@@ -263,10 +192,6 @@ func normalizeResponsesInputToStateless(raw json.RawMessage, profile string) (js
 	var items []map[string]any
 	if err := common.Unmarshal(raw, &items); err != nil {
 		return raw, responsesInputNormalizationResult{}
-	}
-
-	if profile == ResponsesCompatProfileStatelessV2Antigravity || profile == ResponsesCompatProfileStatelessV2AntigravityNoToolsGPT55 {
-		return normalizeResponsesInputForAntigravity(items, raw)
 	}
 
 	normalized := make([]map[string]any, 0)

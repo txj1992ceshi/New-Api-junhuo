@@ -101,16 +101,13 @@ func Distribute() func(c *gin.Context) {
 
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
 					preferred, err := model.CacheGetChannel(preferredChannelID)
-					relayMode := relayconstant.Path2RelayMode(c.Request.URL.Path)
 					if err == nil && preferred != nil {
 						if preferred.Status != common.ChannelStatusEnabled {
 							if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {
 								abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorChannelDisabled))
 								return
 							}
-						} else if !service.ChannelSupportsCodexResponsesRequest(c, preferred, relayMode) {
-							preferred = nil
-						} else if !service.ChannelSupportsRequestedModelForRelay(preferred, relayMode, modelRequest.Model) {
+						} else if !service.ChannelSupportsRequestedModelForRelay(preferred, relayconstant.Path2RelayMode(c.Request.URL.Path), modelRequest.Model) {
 							preferred = nil
 						} else if usingGroup == "auto" {
 							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)

@@ -183,7 +183,7 @@ func TestBuildGeminiRequestFromResponsesIncludesSystemAndFunctionTools(t *testin
 	require.Contains(t, string(data), "apply_patch")
 }
 
-func TestBuildGeminiRequestFromResponsesNoToolsFor55Compatibility(t *testing.T) {
+func TestBuildGeminiRequestFromResponsesKeepsToolsWithoutAntigravityCompatibility(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(rec)
@@ -225,16 +225,18 @@ func TestBuildGeminiRequestFromResponsesNoToolsFor55Compatibility(t *testing.T) 
 	}
 
 	compat := service.ApplyResponsesCompatibilityProfile(ctx, relayconstant.RelayModeResponses, constant.ChannelTypeAntigravity, "gpt-5.5", &req)
-	require.True(t, compat.RemovedTools)
-	require.True(t, compat.RemovedToolChoice)
+	require.False(t, compat.Applied)
+	require.False(t, compat.RemovedTools)
+	require.False(t, compat.RemovedToolChoice)
 
 	geminiReq, err := buildGeminiRequestFromResponses(ctx, info, req)
 	require.NoError(t, err)
-	require.Nil(t, geminiReq.ToolConfig)
-	require.Empty(t, geminiReq.GetTools())
-	require.Len(t, geminiReq.Contents, 1)
-	require.Equal(t, "user", geminiReq.Contents[0].Role)
-	require.Equal(t, "write code", geminiReq.Contents[0].Parts[0].Text)
+	require.NotNil(t, geminiReq.ToolConfig)
+	require.NotEmpty(t, geminiReq.GetTools())
+	require.Len(t, geminiReq.Contents, 2)
+	require.Equal(t, "model", geminiReq.Contents[0].Role)
+	require.Equal(t, "user", geminiReq.Contents[len(geminiReq.Contents)-1].Role)
+	require.Equal(t, "write code", geminiReq.Contents[len(geminiReq.Contents)-1].Parts[0].Text)
 }
 
 func TestBuildResponsesResponseFromGeminiProducesMessageAndFunctionCall(t *testing.T) {
