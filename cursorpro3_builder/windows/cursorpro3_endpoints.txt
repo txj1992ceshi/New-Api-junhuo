@@ -1,0 +1,18 @@
+CursorPro 3 Windows Control API
+================================
+
+Base URL:
+http://127.0.0.1:18765
+
+GET  /v1/health
+GET  /v1/register/status
+GET  /v1/tokens
+POST /v1/tokens/export
+POST /v1/register/trigger
+
+Examples:
+
+curl http://127.0.0.1:18765/v1/health
+curl http://127.0.0.1:18765/v1/tokens
+curl -X POST http://127.0.0.1:18765/v1/tokens/export
+curl -X POST http://127.0.0.1:18765/v1/register/trigger

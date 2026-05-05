@@ -1,0 +1,20 @@
+CursorPro 3 Windows Layout
+==========================
+
+Install directory:
+  C:\Program Files\CursorPro3 x64
+
+App data:
+  %APPDATA%\CursorPro3
+
+Control state:
+  %APPDATA%\CursorPro3\control_state.json
+
+Control log:
+  %APPDATA%\CursorPro3\logs\control_server.log
+
+Exported tokens:
+  %APPDATA%\CursorPro3\exports\codex\*.json
+
+Compatibility source tokens:
+  %APPDATA%\NVIDIA_NV\codex_tokens\*.json
