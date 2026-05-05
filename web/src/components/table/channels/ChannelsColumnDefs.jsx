@@ -202,7 +202,12 @@ const renderStatus = (status, record = undefined, t) => {
   if (channelInfo) {
     if (channelInfo.is_multi_key) {
       let keySize = channelInfo.multi_key_size;
-      return renderMultiKeyStatus(status, keySize, record, t);
+      let enabledKeySize = keySize;
+      if (channelInfo.multi_key_status_list) {
+        enabledKeySize =
+          keySize - Object.keys(channelInfo.multi_key_status_list).length;
+      }
+      return renderMultiKeyStatus(status, keySize, record, t, enabledKeySize);
     }
   }
   return (
@@ -212,7 +217,7 @@ const renderStatus = (status, record = undefined, t) => {
   );
 };
 
-const renderMultiKeyStatus = (status, keySize, record, t) => {
+const renderMultiKeyStatus = (status, keySize, record, t, enabledKeySize = keySize) => {
   const codexSummary = record?.codex_pool_summary;
   const windsurfSummary = record?.windsurf_pool_summary;
   const statusLabel = getStatusLabel(status, t);
@@ -238,7 +243,7 @@ const renderMultiKeyStatus = (status, keySize, record, t) => {
 
   return (
     <Tag color={getStatusColor(status)} shape='circle'>
-      {statusLabel} · {t('库存')} {keySize}
+      {statusLabel} {enabledKeySize}/{keySize}
     </Tag>
   );
 };
