@@ -1308,6 +1308,7 @@ const CodexUsageLoader = ({ t, record, initialPayload, onCopy }) => {
   const [poolHealthPayload, setPoolHealthPayload] = useState(null);
   const [replacementPayload, setReplacementPayload] = useState(null);
   const hasShownErrorRef = useRef(false);
+  const requestIdRef = useRef(0);
   const mountedRef = useRef(true);
   const recordId = record?.id;
 
@@ -1317,6 +1318,8 @@ const CodexUsageLoader = ({ t, record, initialPayload, onCopy }) => {
       return;
     }
 
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
     if (mountedRef.current) setLoading(true);
     try {
       const [usageRes, poolHealthRes, replacementRes] =
@@ -1331,7 +1334,7 @@ const CodexUsageLoader = ({ t, record, initialPayload, onCopy }) => {
             skipErrorHandler: true,
           }),
         ]);
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || requestIdRef.current !== requestId) return;
       const usageData =
         usageRes.status === 'fulfilled' ? (usageRes.value?.data ?? null) : null;
       const poolData =
@@ -1353,12 +1356,14 @@ const CodexUsageLoader = ({ t, record, initialPayload, onCopy }) => {
       setPoolHealthPayload(poolData);
       setReplacementPayload(replacementData);
 
-      if (!usageData?.success && !hasShownErrorRef.current) {
+      if (usageData?.success) {
+        hasShownErrorRef.current = false;
+      } else if (!hasShownErrorRef.current) {
         hasShownErrorRef.current = true;
         showError(getDisplayText(usageData?.message) || tt('获取用量失败'));
       }
     } catch (error) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || requestIdRef.current !== requestId) return;
       if (!hasShownErrorRef.current) {
         hasShownErrorRef.current = true;
         showError(
@@ -1369,7 +1374,9 @@ const CodexUsageLoader = ({ t, record, initialPayload, onCopy }) => {
       }
       setPayload({ success: false, message: String(error) });
     } finally {
-      if (mountedRef.current) setLoading(false);
+      if (mountedRef.current && requestIdRef.current === requestId) {
+        setLoading(false);
+      }
     }
   }, [recordId, tt]);
 

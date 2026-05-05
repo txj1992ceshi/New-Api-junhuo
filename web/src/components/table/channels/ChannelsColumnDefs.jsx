@@ -218,10 +218,11 @@ const renderMultiKeyStatus = (status, keySize, record, t) => {
   const statusLabel = getStatusLabel(status, t);
 
   if (isCodexStatusCapableChannel(record) && codexSummary) {
+    const availableCount = codexSummary.available_count ?? 0;
+    const totalCount = codexSummary.total_count || keySize || 0;
     return (
       <Tag color={getStatusColor(status)} shape='circle'>
-        {statusLabel} · {t('可用')} {codexSummary.available_count} · {t('库存')}{' '}
-        {codexSummary.total_count || keySize}
+        {statusLabel} · {availableCount}/{totalCount}
       </Tag>
     );
   }
