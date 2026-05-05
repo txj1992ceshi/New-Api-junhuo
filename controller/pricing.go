@@ -9,6 +9,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+var hiddenPricingGroupsForNonAdmin = map[string]struct{}{
+	"antigravity-chat": {},
+}
+
 func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string]string) []model.Pricing {
 	if len(pricing) == 0 {
 		return pricing
@@ -33,17 +37,52 @@ func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string
 	return filtered
 }
 
+func filterHiddenPricingGroupsForNonAdmin(pricing []model.Pricing, usableGroup map[string]string, isAdmin bool) ([]model.Pricing, map[string]string) {
+	if isAdmin || len(hiddenPricingGroupsForNonAdmin) == 0 {
+		return pricing, usableGroup
+	}
+
+	filteredGroups := make(map[string]string, len(usableGroup))
+	for group, value := range usableGroup {
+		if _, hidden := hiddenPricingGroupsForNonAdmin[group]; hidden {
+			continue
+		}
+		filteredGroups[group] = value
+	}
+
+	filteredPricing := make([]model.Pricing, 0, len(pricing))
+	for _, item := range pricing {
+		cloned := item
+		if len(item.EnableGroup) > 0 {
+			enableGroups := make([]string, 0, len(item.EnableGroup))
+			for _, group := range item.EnableGroup {
+				if _, hidden := hiddenPricingGroupsForNonAdmin[group]; hidden {
+					continue
+				}
+				enableGroups = append(enableGroups, group)
+			}
+			cloned.EnableGroup = enableGroups
+		}
+		filteredPricing = append(filteredPricing, cloned)
+	}
+
+	return filteredPricing, filteredGroups
+}
+
 func GetPricing(c *gin.Context) {
 	pricing := model.GetPricing()
 	userId, exists := c.Get("id")
 	usableGroup := map[string]string{}
 	groupRatio := map[string]float64{}
+	isAdmin := false
 	for s, f := range ratio_setting.GetGroupRatioCopy() {
 		groupRatio[s] = f
 	}
 	var group string
 	if exists {
-		user, err := model.GetUserCache(userId.(int))
+		uid := userId.(int)
+		isAdmin = model.IsAdmin(uid)
+		user, err := model.GetUserCache(uid)
 		if err == nil {
 			group = user.Group
 			for g := range groupRatio {
@@ -57,6 +96,7 @@ func GetPricing(c *gin.Context) {
 
 	usableGroup = service.GetUserUsableGroups(group)
 	pricing = filterPricingByUsableGroups(pricing, usableGroup)
+	pricing, usableGroup = filterHiddenPricingGroupsForNonAdmin(pricing, usableGroup, isAdmin)
 	// check groupRatio contains usableGroup
 	for group := range ratio_setting.GetGroupRatioCopy() {
 		if _, ok := usableGroup[group]; !ok {
