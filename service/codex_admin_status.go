@@ -366,7 +366,10 @@ func diagnoseCursorProSync(tokenStatus *cursorProTokenStatus, state *cursorProTr
 	return ""
 }
 
-func deriveTriggerResult(state *cursorProTriggerState, registerStatus *cursorProRegisterStatus) string {
+func deriveTriggerResult(state *cursorProTriggerState, registerStatus *cursorProRegisterStatus, blockReason string) string {
+	if blockReason == cursorProBlockReasonNoYield {
+		return "trigger_no_yield_cooldown"
+	}
 	if state != nil {
 		switch state.LastResultStatus {
 		case "failed":
@@ -400,6 +403,8 @@ func deriveRecoveryResult(state *cursorProTriggerState, registerStatus *cursorPr
 		return "imported_pending_probe"
 	case state.LastSuccessfulRecoveryReason != "":
 		return state.LastSuccessfulRecoveryReason
+	case state.LastResultStatus == "failed" && state.LastErrorCode == cursorProResultCodeNoYield:
+		return "register_no_yield"
 	case state.LastResultStatus == "failed":
 		return "recovery_failed"
 	}
@@ -481,7 +486,7 @@ func GetCursorProReplacementStatus(ctx context.Context, channelID int, now time.
 	}
 
 	state := getCursorProTriggerSnapshot(channelID, now)
-	cooldownDecision := evaluateCursorProTriggerCooldown(state, registerStatus, health, recentNoAvailable, recentHotPathTriggers, now)
+	cooldownDecision := evaluateCursorProTriggerCooldown(state, registerStatus, tokenStatus, health, recentNoAvailable, recentHotPathTriggers, now)
 	timeline := buildCursorProRecoveryTimeline(state, registerStatus, tokenStatus)
 
 	view := &CursorProReplacementStatusView{
@@ -521,7 +526,7 @@ func GetCursorProReplacementStatus(ctx context.Context, channelID int, now time.
 		LastImportAt:                 lastImportAtPtr(state),
 		LastImportResult:             state.LastImportResult,
 		SyncDiagnosis:                diagnoseCursorProSync(tokenStatus, state, health),
-		TriggerResult:                deriveTriggerResult(state, registerStatus),
+		TriggerResult:                deriveTriggerResult(state, registerStatus, cooldownDecision.BlockReason),
 		RecoveryResult:               deriveRecoveryResult(state, registerStatus, tokenStatus, health),
 		PoolRiskLevel:                derivePoolRiskLevel(tokenStatus, state, health, now),
 		SourceQuietSince:             timePtrIfNonZero(state.SourceQuietSince),

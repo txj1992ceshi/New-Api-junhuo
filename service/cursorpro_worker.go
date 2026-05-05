@@ -19,7 +19,11 @@ import (
 	"github.com/QuantumNous/new-api/model"
 )
 
-const defaultCursorProControlURL = "http://127.0.0.1:18765"
+const (
+	defaultCursorProControlURL  = "http://127.0.0.1:18765"
+	cursorProResultCodeNoYield  = "register_no_yield"
+	cursorProBlockReasonNoYield = "recent_no_yield"
+)
 
 type cursorProExportFile struct {
 	Filename   string `json:"filename"`
@@ -384,6 +388,41 @@ func deriveCursorProCooldownBaseSecondsWithMode(state *cursorProTriggerState, re
 	return 90
 }
 
+func cursorProNoYieldCooldownSeconds(mode string) int {
+	if mode == cursorProReplacementModeNearExhausted {
+		return 300
+	}
+	return 600
+}
+
+func hasCursorProYieldSinceTrigger(state *cursorProTriggerState, tokenStatus *cursorProTokenStatus) bool {
+	if state == nil || state.LastTriggerAt.IsZero() {
+		return false
+	}
+	triggerAt := state.LastTriggerAt
+	if !state.LastSuccessfulRecoveryAt.IsZero() && state.LastSuccessfulRecoveryAt.After(triggerAt) {
+		return true
+	}
+	if !state.LastImportAt.IsZero() && state.LastImportAt.After(triggerAt) {
+		return true
+	}
+	if !state.LastExportMtime.IsZero() && state.LastExportMtime.After(triggerAt) {
+		return true
+	}
+	if tokenStatus == nil {
+		return false
+	}
+	sourceLatest := parseRFC3339TimeOrZero(tokenStatus.SourceLatestMtime)
+	if !sourceLatest.IsZero() && sourceLatest.After(triggerAt) {
+		return true
+	}
+	exportLatest := parseRFC3339TimeOrZero(tokenStatus.ExportLatestMtime)
+	if !exportLatest.IsZero() && exportLatest.After(triggerAt) {
+		return true
+	}
+	return false
+}
+
 func deriveCursorProCooldownBreakReason(health *CodexPoolHealth, recentNoAvailable int, recentHotPath int) string {
 	return deriveCursorProCooldownBreakReasonWithMode(health, recentNoAvailable, recentHotPath, cursorProReplacementModePoolHealth)
 }
@@ -407,17 +446,19 @@ func deriveCursorProCooldownBreakReasonWithMode(health *CodexPoolHealth, recentN
 func evaluateCursorProTriggerCooldown(
 	state *cursorProTriggerState,
 	registerStatus *cursorProRegisterStatus,
+	tokenStatus *cursorProTokenStatus,
 	health *CodexPoolHealth,
 	recentNoAvailable int,
 	recentHotPath int,
 	now time.Time,
 ) cursorProCooldownDecision {
-	return evaluateCursorProTriggerCooldownWithMode(state, registerStatus, health, recentNoAvailable, recentHotPath, now, cursorProReplacementModePoolHealth)
+	return evaluateCursorProTriggerCooldownWithMode(state, registerStatus, tokenStatus, health, recentNoAvailable, recentHotPath, now, cursorProReplacementModePoolHealth)
 }
 
 func evaluateCursorProTriggerCooldownWithMode(
 	state *cursorProTriggerState,
 	registerStatus *cursorProRegisterStatus,
+	tokenStatus *cursorProTokenStatus,
 	health *CodexPoolHealth,
 	recentNoAvailable int,
 	recentHotPath int,
@@ -450,6 +491,21 @@ func evaluateCursorProTriggerCooldownWithMode(
 		decision.Allowed = false
 		decision.BlockReason = "rate_limited"
 		return decision
+	}
+	if state.LastResultStatus == "failed" && state.LastErrorCode == cursorProResultCodeNoYield && !state.LastTriggerAt.IsZero() && !hasCursorProYieldSinceTrigger(state, tokenStatus) {
+		baseSeconds := cursorProNoYieldCooldownSeconds(mode)
+		decision.CooldownBaseSeconds = baseSeconds
+		decision.CooldownUntil = state.LastTriggerAt.Add(time.Duration(baseSeconds) * time.Second)
+		if decision.CooldownUntil.After(now) {
+			decision.Allowed = false
+			decision.BlockReason = cursorProBlockReasonNoYield
+			decision.CooldownMode = "no_yield_backoff"
+			decision.CooldownSecondsRemaining = int(decision.CooldownUntil.Sub(now).Seconds())
+			if decision.CooldownSecondsRemaining < 0 {
+				decision.CooldownSecondsRemaining = 0
+			}
+			return decision
+		}
 	}
 	baseSeconds := deriveCursorProCooldownBaseSecondsWithMode(state, registerStatus, health, mode)
 	decision.CooldownBaseSeconds = baseSeconds
@@ -487,7 +543,7 @@ func TriggerCursorProReplacement(ctx context.Context, channelID int, reason stri
 	health, recentNoAvailable, recentHotPath := loadCursorProCooldownContext(channelID, now)
 	mode := cursorProReplacementModeFromChannelID(channelID)
 	updateCursorProSourceQuietSince(state, tokenStatus, now)
-	cooldownDecision := evaluateCursorProTriggerCooldownWithMode(state, registerStatus, health, recentNoAvailable, recentHotPath, now, mode)
+	cooldownDecision := evaluateCursorProTriggerCooldownWithMode(state, registerStatus, tokenStatus, health, recentNoAvailable, recentHotPath, now, mode)
 	if !cooldownDecision.Allowed {
 		return &CursorProReplacementResult{
 			Triggered: false,
@@ -810,42 +866,53 @@ func ReconcileCursorProReplacementState(ctx context.Context) {
 		}
 		if status.Status == "succeeded" || status.Status == "failed" {
 			exportSnapshot := readCursorProExportSnapshot()
-			baselineKnown := state.LastExportCount > 0 || state.LastExportName != "" || !state.LastExportMtime.IsZero()
-			exportYielded := false
-			if baselineKnown {
-				exportYielded = exportSnapshot.Count > state.LastExportCount
-				if !exportYielded && !exportSnapshot.LatestMtime.IsZero() && exportSnapshot.LatestMtime.After(state.LastExportMtime) {
-					exportYielded = true
-				}
-				if !exportYielded && exportSnapshot.LatestName != "" && exportSnapshot.LatestName != state.LastExportName {
-					exportYielded = true
-				}
-			}
-			state.LastTaskID = status.TaskID
-			state.LastTaskFinishedAt = status.FinishedAt
-			state.LastResultStatus = status.Status
-			state.LastErrorCode = status.ErrorCode
-			state.LastErrorMessage = status.ErrorMessage
-			if exportYielded && status.Status == "failed" && status.ErrorCode == "register_timeout" {
-				state.LastResultStatus = "succeeded"
-				state.LastErrorCode = "export_detected_after_timeout"
-				state.LastErrorMessage = "Detected new CursorPro export files after timeout; replacement produced new tokens."
-			}
-			if status.CreatedCount+status.UpdatedCount > 0 || exportYielded {
-				state.ConsecutiveNoYield = 0
-				recordCursorProSuccessfulRecovery(state, now, "source_sync_succeeded")
-			} else {
-				state.ConsecutiveNoYield++
-			}
-			state.LastExportCount = exportSnapshot.Count
-			state.LastExportName = exportSnapshot.LatestName
-			state.LastExportMtime = exportSnapshot.LatestMtime
-			if state.ConsecutiveNoYield >= 3 {
-				state.CircuitOpenUntil = now.Add(30 * time.Minute)
-			}
+			applyCursorProRegisterOutcome(state, status, exportSnapshot, now)
 		}
 		return true
 	})
+}
+
+func applyCursorProRegisterOutcome(state *cursorProTriggerState, status *cursorProRegisterStatus, exportSnapshot cursorProExportSnapshot, now time.Time) {
+	if state == nil || status == nil {
+		return
+	}
+	baselineKnown := state.LastExportCount > 0 || state.LastExportName != "" || !state.LastExportMtime.IsZero()
+	exportYielded := false
+	if baselineKnown {
+		exportYielded = exportSnapshot.Count > state.LastExportCount
+		if !exportYielded && !exportSnapshot.LatestMtime.IsZero() && exportSnapshot.LatestMtime.After(state.LastExportMtime) {
+			exportYielded = true
+		}
+		if !exportYielded && exportSnapshot.LatestName != "" && exportSnapshot.LatestName != state.LastExportName {
+			exportYielded = true
+		}
+	}
+	state.LastTaskID = status.TaskID
+	state.LastTaskFinishedAt = status.FinishedAt
+	state.LastResultStatus = status.Status
+	state.LastErrorCode = status.ErrorCode
+	state.LastErrorMessage = status.ErrorMessage
+	if exportYielded && status.Status == "failed" && status.ErrorCode == "register_timeout" {
+		state.LastResultStatus = "succeeded"
+		state.LastErrorCode = "export_detected_after_timeout"
+		state.LastErrorMessage = "Detected new CursorPro export files after timeout; replacement produced new tokens."
+	} else if !exportYielded && status.Status == "failed" && status.ErrorCode == "register_timeout" {
+		state.LastResultStatus = "failed"
+		state.LastErrorCode = cursorProResultCodeNoYield
+		state.LastErrorMessage = "Register trigger completed without new source/export tokens."
+	}
+	if status.CreatedCount+status.UpdatedCount > 0 || exportYielded {
+		state.ConsecutiveNoYield = 0
+		recordCursorProSuccessfulRecovery(state, now, "source_sync_succeeded")
+	} else {
+		state.ConsecutiveNoYield++
+	}
+	state.LastExportCount = exportSnapshot.Count
+	state.LastExportName = exportSnapshot.LatestName
+	state.LastExportMtime = exportSnapshot.LatestMtime
+	if state.ConsecutiveNoYield >= 3 {
+		state.CircuitOpenUntil = now.Add(30 * time.Minute)
+	}
 }
 
 func StartCursorProAutoImportTask() {

@@ -17,7 +17,7 @@ func TestEvaluateCursorProTriggerCooldownFailedStateBlocks(t *testing.T) {
 		AvailableCount: 1,
 	}
 
-	decision := evaluateCursorProTriggerCooldown(state, nil, health, 0, 0, now)
+	decision := evaluateCursorProTriggerCooldown(state, nil, nil, health, 0, 0, now)
 	if decision.Allowed {
 		t.Fatal("expected cooldown to block failed trigger")
 	}
@@ -44,7 +44,7 @@ func TestEvaluateCursorProTriggerCooldownNearExhaustedUsesLongerWindows(t *testi
 		AvailableCount: 1,
 	}
 
-	decision := evaluateCursorProTriggerCooldownWithMode(state, nil, health, 0, 5, now, cursorProReplacementModeNearExhausted)
+	decision := evaluateCursorProTriggerCooldownWithMode(state, nil, nil, health, 0, 5, now, cursorProReplacementModeNearExhausted)
 	if decision.Allowed {
 		t.Fatal("expected cooldown to block near-exhausted failed trigger")
 	}
@@ -67,7 +67,7 @@ func TestEvaluateCursorProTriggerCooldownBreaksWhenPoolIsEmpty(t *testing.T) {
 		AvailableCount: 0,
 	}
 
-	decision := evaluateCursorProTriggerCooldown(state, nil, health, 4, 0, now)
+	decision := evaluateCursorProTriggerCooldown(state, nil, nil, health, 4, 0, now)
 	if !decision.Allowed {
 		t.Fatal("expected pool-empty cooldown break to allow trigger")
 	}
@@ -94,7 +94,7 @@ func TestEvaluateCursorProTriggerCooldownNearExhaustedOnlyBreaksOnEmptyPool(t *t
 		AvailableCount: 1,
 	}
 
-	decision := evaluateCursorProTriggerCooldownWithMode(state, nil, health, 4, 3, now, cursorProReplacementModeNearExhausted)
+	decision := evaluateCursorProTriggerCooldownWithMode(state, nil, nil, health, 4, 3, now, cursorProReplacementModeNearExhausted)
 	if decision.Allowed {
 		t.Fatal("expected near-exhausted cooldown to stay blocked when pool still has availability")
 	}
@@ -118,7 +118,7 @@ func TestEvaluateCursorProTriggerCooldownShortensAfterUsableRecovery(t *testing.
 		AvailableCount: 1,
 	}
 
-	decision := evaluateCursorProTriggerCooldown(state, nil, health, 0, 0, now)
+	decision := evaluateCursorProTriggerCooldown(state, nil, nil, health, 0, 0, now)
 	if decision.Allowed {
 		t.Fatal("expected short successful cooldown to still block at 30s")
 	}
@@ -142,7 +142,7 @@ func TestEvaluateCursorProTriggerCooldownNearExhaustedShortensAfterRecovery(t *t
 		AvailableCount: 1,
 	}
 
-	decision := evaluateCursorProTriggerCooldownWithMode(state, nil, health, 0, 0, now, cursorProReplacementModeNearExhausted)
+	decision := evaluateCursorProTriggerCooldownWithMode(state, nil, nil, health, 0, 0, now, cursorProReplacementModeNearExhausted)
 	if decision.Allowed {
 		t.Fatal("expected short successful cooldown to still block at 30s")
 	}
@@ -159,11 +159,78 @@ func TestEvaluateCursorProTriggerCooldownHonorsRunningRegisterTask(t *testing.T)
 	}
 	registerStatus := &cursorProRegisterStatus{Status: "running"}
 
-	decision := evaluateCursorProTriggerCooldown(state, registerStatus, nil, 10, 10, now)
+	decision := evaluateCursorProTriggerCooldown(state, registerStatus, nil, nil, 10, 10, now)
 	if decision.Allowed {
 		t.Fatal("expected running register task to block trigger")
 	}
 	if decision.BlockReason != "already_running" {
 		t.Fatalf("unexpected block reason: %s", decision.BlockReason)
+	}
+}
+
+func TestEvaluateCursorProTriggerCooldownBlocksRecentNoYield(t *testing.T) {
+	now := time.Now()
+	triggerAt := now.Add(-2 * time.Minute)
+	state := &cursorProTriggerState{
+		LastTriggerAt:      triggerAt,
+		LastResultStatus:   "failed",
+		LastErrorCode:      cursorProResultCodeNoYield,
+		RecentTriggerTimes: []time.Time{triggerAt},
+	}
+	tokenStatus := &cursorProTokenStatus{
+		SourceLatestMtime: triggerAt.Add(-time.Minute).Format(time.RFC3339),
+		ExportLatestMtime: triggerAt.Add(-30 * time.Second).Format(time.RFC3339),
+	}
+
+	decision := evaluateCursorProTriggerCooldown(state, nil, tokenStatus, &CodexPoolHealth{AvailableCount: 1}, 0, 0, now)
+	if decision.Allowed {
+		t.Fatal("expected recent no-yield cooldown to block trigger")
+	}
+	if decision.BlockReason != cursorProBlockReasonNoYield {
+		t.Fatalf("unexpected block reason: %s", decision.BlockReason)
+	}
+	if decision.CooldownBaseSeconds != 600 {
+		t.Fatalf("expected no-yield cooldown 600, got %d", decision.CooldownBaseSeconds)
+	}
+}
+
+func TestEvaluateCursorProTriggerCooldownNearExhaustedBlocksRecentNoYieldShorter(t *testing.T) {
+	now := time.Now()
+	triggerAt := now.Add(-2 * time.Minute)
+	state := &cursorProTriggerState{
+		LastTriggerAt:      triggerAt,
+		LastResultStatus:   "failed",
+		LastErrorCode:      cursorProResultCodeNoYield,
+		RecentTriggerTimes: []time.Time{triggerAt},
+	}
+
+	decision := evaluateCursorProTriggerCooldownWithMode(state, nil, nil, &CodexPoolHealth{AvailableCount: 1}, 0, 0, now, cursorProReplacementModeNearExhausted)
+	if decision.Allowed {
+		t.Fatal("expected recent no-yield cooldown to block trigger in near-exhausted mode")
+	}
+	if decision.BlockReason != cursorProBlockReasonNoYield {
+		t.Fatalf("unexpected block reason: %s", decision.BlockReason)
+	}
+	if decision.CooldownBaseSeconds != 300 {
+		t.Fatalf("expected no-yield cooldown 300, got %d", decision.CooldownBaseSeconds)
+	}
+}
+
+func TestEvaluateCursorProTriggerCooldownAllowsAfterYieldResumes(t *testing.T) {
+	now := time.Now()
+	triggerAt := now.Add(-2 * time.Minute)
+	state := &cursorProTriggerState{
+		LastTriggerAt:      triggerAt,
+		LastResultStatus:   "failed",
+		LastErrorCode:      cursorProResultCodeNoYield,
+		RecentTriggerTimes: []time.Time{triggerAt},
+	}
+	tokenStatus := &cursorProTokenStatus{
+		ExportLatestMtime: triggerAt.Add(10 * time.Second).Format(time.RFC3339),
+	}
+
+	decision := evaluateCursorProTriggerCooldown(state, nil, tokenStatus, &CodexPoolHealth{AvailableCount: 1}, 0, 0, now)
+	if decision.BlockReason == cursorProBlockReasonNoYield {
+		t.Fatal("expected fresh yield to clear no-yield backoff")
 	}
 }

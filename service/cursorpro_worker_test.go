@@ -223,3 +223,68 @@ func TestMarkCodexKeyRateLimitedPolicy(t *testing.T) {
 		t.Fatalf("expected consecutive429=1, got %d", meta.Consecutive429)
 	}
 }
+
+func TestApplyCursorProRegisterOutcomeMarksNoYieldTimeout(t *testing.T) {
+	now := time.Now()
+	state := &cursorProTriggerState{
+		LastTriggerAt:   now.Add(-5 * time.Minute),
+		LastExportCount: 3,
+		LastExportName:  "existing.json",
+		LastExportMtime: now.Add(-6 * time.Minute),
+	}
+	status := &cursorProRegisterStatus{
+		TaskID:       "task-1",
+		Status:       "failed",
+		ErrorCode:    "register_timeout",
+		ErrorMessage: "No token file changes were detected before timeout.",
+		FinishedAt:   now.Format(time.RFC3339),
+	}
+	exportSnapshot := cursorProExportSnapshot{
+		Count:       3,
+		LatestName:  "existing.json",
+		LatestMtime: now.Add(-6 * time.Minute),
+	}
+
+	applyCursorProRegisterOutcome(state, status, exportSnapshot, now)
+
+	if state.LastResultStatus != "failed" {
+		t.Fatalf("expected failed result status, got %s", state.LastResultStatus)
+	}
+	if state.LastErrorCode != cursorProResultCodeNoYield {
+		t.Fatalf("expected no-yield code, got %s", state.LastErrorCode)
+	}
+	if state.LastErrorMessage != "Register trigger completed without new source/export tokens." {
+		t.Fatalf("unexpected message: %s", state.LastErrorMessage)
+	}
+}
+
+func TestApplyCursorProRegisterOutcomePreservesTimeoutSuccessWhenExportYielded(t *testing.T) {
+	now := time.Now()
+	state := &cursorProTriggerState{
+		LastTriggerAt:   now.Add(-5 * time.Minute),
+		LastExportCount: 3,
+		LastExportName:  "existing.json",
+		LastExportMtime: now.Add(-6 * time.Minute),
+	}
+	status := &cursorProRegisterStatus{
+		TaskID:       "task-2",
+		Status:       "failed",
+		ErrorCode:    "register_timeout",
+		ErrorMessage: "No token file changes were detected before timeout.",
+		FinishedAt:   now.Format(time.RFC3339),
+	}
+	exportSnapshot := cursorProExportSnapshot{
+		Count:       4,
+		LatestName:  "new.json",
+		LatestMtime: now.Add(-time.Minute),
+	}
+
+	applyCursorProRegisterOutcome(state, status, exportSnapshot, now)
+
+	if state.LastResultStatus != "succeeded" {
+		t.Fatalf("expected succeeded result status, got %s", state.LastResultStatus)
+	}
+	if state.LastErrorCode != "export_detected_after_timeout" {
+		t.Fatalf("unexpected result code: %s", state.LastErrorCode)
+	}
+}
