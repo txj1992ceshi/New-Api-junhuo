@@ -9,15 +9,14 @@ import subprocess
 import threading
 import time
 import uuid
-import ctypes
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 
 
-APP_NAME = os.environ.get("CURSORPRO3_APP_NAME", "CursorPro 3")
-APP_BUNDLE_ID = os.environ.get("CURSORPRO3_BUNDLE_ID", "com.yuxin.CursorPr3")
+APP_NAME = os.environ.get("CURSORPRO3_APP_NAME", "CursorPro3")
+APP_BUNDLE_ID = os.environ.get("CURSORPRO3_BUNDLE_ID", "com.yuxin.CursorPro")
 APP_BUNDLE_PATH = Path(os.environ.get("CURSORPRO3_APP_PATH", Path(__file__).resolve().parents[2]))
 SOURCE_TOKEN_DIR = Path.home() / "Library/Application Support/NVIDIA_NV/codex_tokens"
 STATE_ROOT = Path.home() / "Library/Application Support/CursorPro3"
@@ -31,6 +30,8 @@ HOST = "127.0.0.1"
 REGISTER_TIMEOUT_SECONDS = int(os.environ.get("CURSORPRO3_REGISTER_TIMEOUT_SECONDS", "300"))
 POLL_INTERVAL_SECONDS = float(os.environ.get("CURSORPRO3_POLL_INTERVAL_SECONDS", "2"))
 SOURCE_SYNC_INTERVAL_SECONDS = float(os.environ.get("CURSORPRO3_SOURCE_SYNC_INTERVAL_SECONDS", "5"))
+AX_MAIN_BUTTON_TITLE = "一键换号"
+AX_MODAL_BUTTON_TITLES = ["我知道了", "关闭", "×", "✕", "确定", "确认", "继续", "知道了", "稍后", "取消"]
 
 
 def now_iso() -> str:
@@ -374,133 +375,429 @@ def launch_app() -> None:
     subprocess.run(["open", str(APP_BUNDLE_PATH)], check=False)
 
 
-def get_window_geometry() -> tuple[float, float, float, float]:
+def app_has_accessibility_permission() -> bool:
     swift_code = r"""
 import AppKit
-import CoreGraphics
+import ApplicationServices
+import Foundation
+
+let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false] as CFDictionary
+let trusted = AXIsProcessTrustedWithOptions(options)
+print(trusted ? "true" : "false")
+"""
+    proc = subprocess.run(["swift", "-e", swift_code], capture_output=True, text=True)
+    return proc.returncode == 0 and proc.stdout.strip().lower() == "true"
+
+
+def run_ax_bridge(action: str, *, allow_activate: bool = False) -> dict[str, Any]:
+    swift_code = r"""
+import AppKit
+import ApplicationServices
 import Foundation
 
 let args = CommandLine.arguments
-guard args.count == 3 else {
-    fputs("invalid geometry arguments\n", stderr)
+guard args.count >= 4 else {
+    fputs("invalid ax bridge arguments\n", stderr)
     exit(2)
 }
 
 let bundleID = args[1]
-let fallbackName = args[2]
-let runningApp = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
-let targetPID = runningApp?.processIdentifier ?? 0
-
-guard let rawWindowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
-    fputs("failed to read window list\n", stderr)
-    exit(3)
+let action = args[2]
+let allowActivate = args[3] == "1"
+let modalTitles: [String]
+if args.count >= 5, let data = args[4].data(using: .utf8), let values = try? JSONSerialization.jsonObject(with: data) as? [String] {
+    modalTitles = values
+} else {
+    modalTitles = []
 }
 
-func numberValue(_ raw: Any?) -> Double? {
-    if let v = raw as? Double { return v }
-    if let v = raw as? CGFloat { return Double(v) }
-    if let v = raw as? Int { return Double(v) }
-    if let v = raw as? NSNumber { return v.doubleValue }
-    return nil
-}
-
-for window in rawWindowList {
-    let ownerPID = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value ?? 0
-    if targetPID != 0 && ownerPID != targetPID {
-        continue
-    }
-    if targetPID == 0 {
-        let ownerName = (window[kCGWindowOwnerName as String] as? String) ?? ""
-        if !ownerName.localizedCaseInsensitiveContains(fallbackName) {
-            continue
-        }
-    }
-    let layer = (window[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0
-    if layer != 0 {
-        continue
-    }
-    guard let bounds = window[kCGWindowBounds as String] as? [String: Any],
-          let x = numberValue(bounds["X"]),
-          let y = numberValue(bounds["Y"]),
-          let width = numberValue(bounds["Width"]),
-          let height = numberValue(bounds["Height"]),
-          width > 0,
-          height > 0 else {
-        continue
-    }
-    print("\(x),\(y),\(width),\(height)")
+let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: false] as CFDictionary
+guard AXIsProcessTrustedWithOptions(options) else {
+    let payload: [String: Any] = [
+        "ok": false,
+        "error_code": "ax_permission_missing",
+        "error_message": "Accessibility permission is required for the current Python host."
+    ]
+    let data = try! JSONSerialization.data(withJSONObject: payload)
+    print(String(data: data, encoding: .utf8)!)
     exit(0)
 }
 
-fputs("failed to locate app window\n", stderr)
-exit(4)
+guard let runningApp = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first else {
+    let payload: [String: Any] = [
+        "ok": false,
+        "error_code": "window_inaccessible",
+        "error_message": "Application is not running."
+    ]
+    let data = try! JSONSerialization.data(withJSONObject: payload)
+    print(String(data: data, encoding: .utf8)!)
+    exit(0)
+}
+
+@discardableResult
+func copyAttr(_ element: AXUIElement, _ attr: String, _ value: inout CFTypeRef?) -> AXError {
+    return AXUIElementCopyAttributeValue(element, attr as CFString, &value)
+}
+
+func attrString(_ element: AXUIElement, _ attr: String) -> String? {
+    var value: CFTypeRef?
+    if copyAttr(element, attr, &value) != .success {
+        return nil
+    }
+    if let text = value as? String {
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    if let num = value as? NSNumber {
+        return num.stringValue
+    }
+    return nil
+}
+
+func attrBool(_ element: AXUIElement, _ attr: String) -> Bool? {
+    var value: CFTypeRef?
+    if copyAttr(element, attr, &value) != .success {
+        return nil
+    }
+    if let raw = value as? Bool {
+        return raw
+    }
+    if let raw = value as? NSNumber {
+        return raw.boolValue
+    }
+    return nil
+}
+
+func attrElements(_ element: AXUIElement, _ attr: String) -> [AXUIElement] {
+    var value: CFTypeRef?
+    if copyAttr(element, attr, &value) != .success {
+        return []
+    }
+    return value as? [AXUIElement] ?? []
+}
+
+func attrElement(_ element: AXUIElement, _ attr: String) -> AXUIElement? {
+    var value: CFTypeRef?
+    if copyAttr(element, attr, &value) != .success {
+        return nil
+    }
+    return value as! AXUIElement?
+}
+
+func elementSummary(_ element: AXUIElement) -> [String: Any] {
+    [
+        "role": attrString(element, kAXRoleAttribute as String) ?? "",
+        "title": attrString(element, kAXTitleAttribute as String) ?? "",
+        "description": attrString(element, kAXDescriptionAttribute as String) ?? "",
+        "enabled": attrBool(element, kAXEnabledAttribute as String) ?? false
+    ]
+}
+
+let appElement = AXUIElementCreateApplication(runningApp.processIdentifier)
+
+func findMainWindow() -> AXUIElement? {
+    if let focused = attrElement(appElement, kAXFocusedWindowAttribute as String) {
+        return focused
+    }
+    if let main = attrElement(appElement, kAXMainWindowAttribute as String) {
+        return main
+    }
+    return attrElements(appElement, kAXWindowsAttribute as String).first
+}
+
+func findWebArea(_ element: AXUIElement) -> AXUIElement? {
+    let role = attrString(element, kAXRoleAttribute as String) ?? ""
+    let desc = attrString(element, kAXDescriptionAttribute as String) ?? ""
+    if role == "AXWebArea", desc == "CursorPro" || desc.isEmpty {
+        return element
+    }
+    for child in attrElements(element, kAXChildrenAttribute as String) {
+        if let found = findWebArea(child) {
+            return found
+        }
+    }
+    return nil
+}
+
+func findButtons(_ element: AXUIElement, matches: (String, String) -> Bool) -> [AXUIElement] {
+    var results: [AXUIElement] = []
+    let role = attrString(element, kAXRoleAttribute as String) ?? ""
+    let title = attrString(element, kAXTitleAttribute as String) ?? ""
+    let desc = attrString(element, kAXDescriptionAttribute as String) ?? ""
+    if role == "AXButton", matches(title, desc) {
+        results.append(element)
+    }
+    for child in attrElements(element, kAXChildrenAttribute as String) {
+        results.append(contentsOf: findButtons(child, matches: matches))
+    }
+    return results
+}
+
+func preferredButtonLabel(_ title: String, _ desc: String) -> String {
+    return !title.isEmpty ? title : desc
+}
+
+func containsBlockingModal(_ element: AXUIElement) -> Bool {
+    let role = attrString(element, kAXRoleAttribute as String) ?? ""
+    if role == "AXSheet" || role == "AXDialog" {
+        return true
+    }
+    if attrBool(element, "AXModal") == true {
+        return true
+    }
+    for child in attrElements(element, kAXChildrenAttribute as String) {
+        if containsBlockingModal(child) {
+            return true
+        }
+    }
+    return false
+}
+
+func findSystemModalRoots(_ element: AXUIElement) -> [AXUIElement] {
+    let blockingRoles = Set(["AXSheet", "AXDialog"])
+    let role = attrString(element, kAXRoleAttribute as String) ?? ""
+    let modal = attrBool(element, "AXModal") == true
+    if blockingRoles.contains(role) || modal {
+        return [element]
+    }
+    var searchRoots: [AXUIElement] = []
+    for child in attrElements(element, kAXChildrenAttribute as String) {
+        searchRoots.append(contentsOf: findSystemModalRoots(child))
+    }
+    return searchRoots
+}
+
+func findModalButtons(window: AXUIElement, webArea: AXUIElement?) -> [AXUIElement] {
+    var searchRoots = findSystemModalRoots(window)
+    if let webArea {
+        searchRoots.append(webArea)
+    }
+    var weightedMatches: [(Int, AXUIElement)] = []
+    for root in searchRoots {
+        let buttons = findButtons(root, matches: { title, desc in
+            let candidate = preferredButtonLabel(title, desc)
+            return modalTitles.contains(candidate) && candidate != "一键换号"
+        }))
+        for button in buttons {
+            let candidate = preferredButtonLabel(
+                attrString(button, kAXTitleAttribute as String) ?? "",
+                attrString(button, kAXDescriptionAttribute as String) ?? ""
+            )
+            guard let priority = modalTitles.firstIndex(of: candidate) else {
+                continue
+            }
+            weightedMatches.append((priority, button))
+        }
+    }
+    weightedMatches.sort { lhs, rhs in
+        if lhs.0 != rhs.0 {
+            return lhs.0 < rhs.0
+        }
+        let leftSummary = preferredButtonLabel(
+            attrString(lhs.1, kAXTitleAttribute as String) ?? "",
+            attrString(lhs.1, kAXDescriptionAttribute as String) ?? ""
+        )
+        let rightSummary = preferredButtonLabel(
+            attrString(rhs.1, kAXTitleAttribute as String) ?? "",
+            attrString(rhs.1, kAXDescriptionAttribute as String) ?? ""
+        )
+        return leftSummary < rightSummary
+    }
+    return weightedMatches.map { $0.1 }
+}
+
+func press(_ element: AXUIElement) -> Bool {
+    let result = AXUIElementPerformAction(element, kAXPressAction as CFString)
+    return result == .success
+}
+
+func restoreWindow(_ window: AXUIElement) {
+    _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+    _ = runningApp.activate(options: [.activateIgnoringOtherApps])
+}
+
+guard let window = findMainWindow() else {
+    let payload: [String: Any] = [
+        "ok": false,
+        "error_code": "window_inaccessible",
+        "error_message": "Unable to access the main CursorPro window."
+    ]
+    let data = try! JSONSerialization.data(withJSONObject: payload)
+    print(String(data: data, encoding: .utf8)!)
+    exit(0)
+}
+
+let webArea = findWebArea(window)
+let buttonMatches = webArea.map {
+    findButtons($0, matches: { title, desc in
+        if title == "一键换号" {
+            return true
+        }
+        return title.isEmpty && desc == "一键换号"
+    })
+} ?? []
+let mainButton = buttonMatches.first
+let mainEnabled = mainButton.flatMap { attrBool($0, kAXEnabledAttribute as String) } ?? false
+let modalButtons = findModalButtons(window: window, webArea: webArea)
+let modalDetected = containsBlockingModal(window) || !modalButtons.isEmpty
+let payloadBase: [String: Any] = [
+    "ok": true,
+    "frontmost": runningApp.isActive,
+    "modal_detected": modalDetected,
+    "button_found": mainButton != nil,
+    "button_enabled": mainEnabled,
+    "button": mainButton.map(elementSummary) as Any,
+    "modal_button_count": modalButtons.count,
+    "modal_buttons": modalButtons.map(elementSummary)
+]
+
+switch action {
+case "inspect":
+    let data = try! JSONSerialization.data(withJSONObject: payloadBase)
+    print(String(data: data, encoding: .utf8)!)
+case "press-main":
+    var payload = payloadBase
+    if mainButton == nil {
+        payload["ok"] = false
+        payload["error_code"] = "button_not_found"
+        payload["error_message"] = "AX button '一键换号' was not found."
+    } else if !mainEnabled {
+        payload["ok"] = false
+        payload["error_code"] = "button_disabled"
+        payload["error_message"] = "AX button '一键换号' is disabled."
+    } else if let mainButton, press(mainButton) {
+        payload["pressed"] = true
+    } else {
+        payload["ok"] = false
+        payload["error_code"] = "register_trigger_failed"
+        payload["error_message"] = "Failed to AXPress the '一键换号' button."
+    }
+    let data = try! JSONSerialization.data(withJSONObject: payload)
+    print(String(data: data, encoding: .utf8)!)
+case "dismiss-modal":
+    var payload = payloadBase
+    if let button = modalButtons.first {
+        if press(button) {
+            payload["dismissed"] = true
+            payload["dismissed_button"] = elementSummary(button)
+        } else {
+            payload["ok"] = false
+            payload["error_code"] = "modal_blocking_unresolved"
+            payload["error_message"] = "Detected a blocking modal, but failed to dismiss it."
+        }
+    } else {
+        payload["ok"] = false
+        payload["error_code"] = "modal_blocking_unresolved"
+        payload["error_message"] = "Detected a blocking modal, but no whitelisted button was found."
+    }
+    let data = try! JSONSerialization.data(withJSONObject: payload)
+    print(String(data: data, encoding: .utf8)!)
+case "restore-window":
+    if allowActivate {
+        restoreWindow(window)
+    }
+    var payload = payloadBase
+    payload["restored"] = allowActivate
+    let data = try! JSONSerialization.data(withJSONObject: payload)
+    print(String(data: data, encoding: .utf8)!)
+default:
+    let payload: [String: Any] = [
+        "ok": false,
+        "error_code": "register_trigger_failed",
+        "error_message": "Unknown AX action."
+    ]
+    let data = try! JSONSerialization.data(withJSONObject: payload)
+    print(String(data: data, encoding: .utf8)!)
+}
 """
     proc = subprocess.run(
-        ["swift", "-e", swift_code, APP_BUNDLE_ID, APP_NAME],
+        [
+            "swift",
+            "-e",
+            swift_code,
+            APP_BUNDLE_ID,
+            action,
+            "1" if allow_activate else "0",
+            json.dumps(AX_MODAL_BUTTON_TITLES, ensure_ascii=False),
+        ],
         capture_output=True,
         text=True,
     )
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "failed to locate app window")
-    parts = [item.strip() for item in proc.stdout.strip().split(",") if item.strip()]
-    if len(parts) != 4:
-        raise RuntimeError(f"unexpected window geometry payload: {proc.stdout.strip()!r}")
+        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "failed to execute AX bridge")
     try:
-        return tuple(float(item) for item in parts)  # type: ignore[return-value]
-    except ValueError as exc:
-        raise RuntimeError(f"failed to parse window geometry: {proc.stdout.strip()!r}") from exc
+        payload = json.loads(proc.stdout.strip() or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"failed to parse AX bridge payload: {proc.stdout.strip()!r}") from exc
+    return payload
 
 
-def perform_native_click(x: float, y: float) -> None:
-    class CGPoint(ctypes.Structure):
-        _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
-
-    application_services = ctypes.cdll.LoadLibrary(
-        "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
-    )
-    core_foundation = ctypes.cdll.LoadLibrary(
-        "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
-    )
-
-    application_services.CGEventCreateMouseEvent.restype = ctypes.c_void_p
-    application_services.CGEventCreateMouseEvent.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_uint32,
-        CGPoint,
-        ctypes.c_uint32,
-    ]
-    application_services.CGEventPost.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
-    core_foundation.CFRelease.argtypes = [ctypes.c_void_p]
-
-    point = CGPoint(float(x), float(y))
-    kCGHIDEventTap = 0
-    kCGEventLeftMouseDown = 1
-    kCGEventLeftMouseUp = 2
-    kCGMouseButtonLeft = 0
-
-    down = application_services.CGEventCreateMouseEvent(
-        None, kCGEventLeftMouseDown, point, kCGMouseButtonLeft
-    )
-    up = application_services.CGEventCreateMouseEvent(
-        None, kCGEventLeftMouseUp, point, kCGMouseButtonLeft
-    )
-    if not down or not up:
-        raise RuntimeError("failed to create mouse events")
-    try:
-        application_services.CGEventPost(kCGHIDEventTap, down)
-        application_services.CGEventPost(kCGHIDEventTap, up)
-    finally:
-        core_foundation.CFRelease(down)
-        core_foundation.CFRelease(up)
+def inspect_ax_state(*, allow_activate: bool = False) -> dict[str, Any]:
+    return run_ax_bridge("inspect", allow_activate=allow_activate)
 
 
-def click_main_button() -> None:
-    subprocess.run(["osascript", "-e", f'tell application id "{APP_BUNDLE_ID}" to activate'], check=False)
-    time.sleep(0.6)
-    left, top, width, height = get_window_geometry()
-    target_x = left + (width / 2)
-    target_y = top + (height * 0.5)
-    perform_native_click(target_x, target_y)
+def restore_ax_window() -> dict[str, Any]:
+    return run_ax_bridge("restore-window", allow_activate=True)
+
+
+def press_ax_main_button() -> dict[str, Any]:
+    return run_ax_bridge("press-main", allow_activate=False)
+
+
+def dismiss_ax_modal() -> dict[str, Any]:
+    return run_ax_bridge("dismiss-modal", allow_activate=False)
+
+
+def trigger_ax_register_flow() -> dict[str, Any]:
+    state.set_state(error_message="ax_button_scan_started")
+    inspect = inspect_ax_state(allow_activate=False)
+    if not inspect.get("ok", False):
+        if inspect.get("error_code") == "ax_permission_missing":
+            raise RuntimeError("ax_permission_missing")
+        state.set_state(error_message="ax_window_restore_started")
+        restore = restore_ax_window()
+        if not restore.get("ok", False):
+            raise RuntimeError(restore.get("error_code") or "window_inaccessible")
+        inspect = inspect_ax_state(allow_activate=True)
+        if not inspect.get("ok", False):
+            raise RuntimeError(inspect.get("error_code") or "window_inaccessible")
+
+    if inspect.get("button_found") and inspect.get("button_enabled"):
+        state.set_state(error_message="ax_button_pressed")
+        press_result = press_ax_main_button()
+        if press_result.get("ok") and press_result.get("pressed"):
+            log("triggered one-click register via AXPress")
+            return press_result
+        raise RuntimeError(press_result.get("error_code") or "register_trigger_failed")
+
+    if inspect.get("modal_detected") or inspect.get("button_found") or inspect.get("button_enabled") is False:
+        state.set_state(error_message="ax_web_modal_fallback_started")
+        dismiss_result = dismiss_ax_modal()
+        if not dismiss_result.get("ok") or not dismiss_result.get("dismissed"):
+            raise RuntimeError(dismiss_result.get("error_code") or "modal_blocking_unresolved")
+        time.sleep(0.4)
+        inspect = inspect_ax_state(allow_activate=False)
+        if inspect.get("button_found") and inspect.get("button_enabled"):
+            state.set_state(error_message="ax_button_pressed")
+            press_result = press_ax_main_button()
+            if press_result.get("ok") and press_result.get("pressed"):
+                log("triggered one-click register via AXPress after modal dismissal")
+                return press_result
+            raise RuntimeError(press_result.get("error_code") or "register_trigger_failed")
+        raise RuntimeError("modal_blocking_unresolved")
+
+    state.set_state(error_message="ax_window_restore_started")
+    restore = restore_ax_window()
+    if not restore.get("ok", False):
+        raise RuntimeError(restore.get("error_code") or "window_inaccessible")
+    inspect = inspect_ax_state(allow_activate=True)
+    if inspect.get("button_found") and inspect.get("button_enabled"):
+        state.set_state(error_message="ax_button_pressed")
+        press_result = press_ax_main_button()
+        if press_result.get("ok") and press_result.get("pressed"):
+            log("triggered one-click register via AXPress after window restore")
+            return press_result
+        raise RuntimeError(press_result.get("error_code") or "register_trigger_failed")
+    raise RuntimeError("button_not_found")
 
 
 def run_register_task() -> None:
@@ -529,10 +826,12 @@ def run_register_task() -> None:
             deadline = time.time() + 20
             while time.time() < deadline and not is_app_running():
                 time.sleep(0.5)
-        click_main_button()
-        log("triggered one-click register via UI automation")
+        if not app_has_accessibility_permission():
+            raise RuntimeError("ax_permission_missing")
+        trigger_ax_register_flow()
 
         deadline = time.time() + REGISTER_TIMEOUT_SECONDS
+        state.set_state(error_message="waiting_for_token_yield")
         created = 0
         updated = 0
         while time.time() < deadline:
@@ -560,12 +859,23 @@ def run_register_task() -> None:
             error_message="No token file changes were detected before timeout.",
         )
     except Exception as exc:
+        error_code = str(exc).strip() or "register_trigger_failed"
+        if error_code not in {
+            "button_not_found",
+            "button_disabled",
+            "modal_blocking_unresolved",
+            "window_inaccessible",
+            "ax_permission_missing",
+            "register_timeout",
+            "register_trigger_failed",
+        }:
+            error_code = "register_trigger_failed"
         state.set_state(
             status="failed",
             finished_at=now_iso(),
             created_count=0,
             updated_count=0,
-            error_code="register_trigger_failed",
+            error_code=error_code,
             error_message=str(exc),
         )
         log(f"register task failed: {exc}")

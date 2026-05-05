@@ -34,3 +34,31 @@ data/
 .gopath
 
 token_estimator_test.go
+
+# Local Codex workdirs and deploy staging
+.codex-build/
+.codex-merge-main/
+.deploy-src-new-api/
+
+# Local nested repos kept alongside this workspace
+WindsurfAPI/
+windsurf-manager/
+cockpit-tools/
+opencode-antigravity-auth/
+sub2api/
+duokai/
+
+# Local packaging outputs and extracted assets
+CursorPro420_unpack/
+CursorPro*_assets/
+CursorPro*_extract/
+CursorPro_unpack/
+cursorpro3_builder/CursorPro3
+cursorpro3_builder/win_stage/
+
+# Deployment archives
+new-api-*.tar.gz
+new-api-*.tar.gz.sha256
+
+# Local packaging dependencies
+winpack_tools/node_modules/
