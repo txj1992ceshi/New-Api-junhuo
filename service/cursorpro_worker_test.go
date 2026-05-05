@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/base64"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -418,5 +419,32 @@ func TestApplyCursorProRegisterOutcomePreservesTimeoutSuccessWhenExportYielded(t
 	}
 	if state.LastErrorCode != "export_detected_after_timeout" {
 		t.Fatalf("unexpected result code: %s", state.LastErrorCode)
+	}
+}
+
+func TestDeleteConsumedExportFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	fileA := filepath.Join(tmpDir, "a.json")
+	fileB := filepath.Join(tmpDir, "b.json")
+	if err := os.WriteFile(fileA, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write fileA: %v", err)
+	}
+	if err := os.WriteFile(fileB, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write fileB: %v", err)
+	}
+
+	deleted, failed := deleteConsumedExportFiles([]cursorProConsumedExport{
+		{path: fileA, name: "a.json"},
+		{path: filepath.Join(tmpDir, "missing.json"), name: "missing.json"},
+		{path: fileB, name: "b.json"},
+	})
+	if deleted != 2 || failed != 1 {
+		t.Fatalf("unexpected delete counts: deleted=%d failed=%d", deleted, failed)
+	}
+	if _, err := os.Stat(fileA); !os.IsNotExist(err) {
+		t.Fatalf("expected fileA removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(fileB); !os.IsNotExist(err) {
+		t.Fatalf("expected fileB removed, stat err=%v", err)
 	}
 }

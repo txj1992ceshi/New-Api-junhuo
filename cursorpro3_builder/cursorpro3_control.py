@@ -30,6 +30,7 @@ HOST = "127.0.0.1"
 REGISTER_TIMEOUT_SECONDS = int(os.environ.get("CURSORPRO3_REGISTER_TIMEOUT_SECONDS", "300"))
 POLL_INTERVAL_SECONDS = float(os.environ.get("CURSORPRO3_POLL_INTERVAL_SECONDS", "2"))
 SOURCE_SYNC_INTERVAL_SECONDS = float(os.environ.get("CURSORPRO3_SOURCE_SYNC_INTERVAL_SECONDS", "5"))
+SOURCE_RETENTION_COUNT = int(os.environ.get("CURSORPRO3_SOURCE_RETENTION_COUNT", "20"))
 AX_MAIN_BUTTON_TITLE = "一键换号"
 AX_MODAL_BUTTON_TITLES = ["我知道了", "关闭", "×", "✕", "确定", "确认", "继续", "知道了", "稍后", "取消"]
 
@@ -238,6 +239,31 @@ def build_source_signature() -> dict[str, list[int]]:
     return signature
 
 
+def prune_source_tokens(retention_count: int = SOURCE_RETENTION_COUNT) -> int:
+    if retention_count <= 0 or not SOURCE_TOKEN_DIR.exists():
+        return 0
+    entries: list[tuple[float, Path]] = []
+    for path in SOURCE_TOKEN_DIR.glob("*.json"):
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            log(f"failed to stat source token file {path.name}: {exc}")
+            continue
+        entries.append((stat.st_mtime, path))
+    if len(entries) <= retention_count:
+        return 0
+    entries.sort(key=lambda item: (item[0], item[1].name), reverse=True)
+    pruned = 0
+    for _, path in entries[retention_count:]:
+        try:
+            path.unlink()
+            pruned += 1
+            log(f"pruned stale source token file: {path.name}")
+        except OSError as exc:
+            log(f"failed to prune stale source token file {path.name}: {exc}")
+    return pruned
+
+
 def refresh_sync_state(
     *,
     sync_result: str | None = None,
@@ -298,10 +324,11 @@ def export_tokens() -> dict[str, Any]:
         tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         tmp.replace(out)
         exported += 1
+    pruned_source_count = prune_source_tokens()
     result = {"exported_count": exported, "exported_at": now_iso()}
     state.set_state(last_export_at=result["exported_at"], last_export_count=exported)
     refresh_sync_state(sync_result="export_written")
-    log(f"exported {exported} token files")
+    log(f"exported {exported} token files; pruned_source_count={pruned_source_count}")
     return result
 
 
@@ -453,6 +480,16 @@ func attrString(_ element: AXUIElement, _ attr: String) -> String? {
     return nil
 }
 
+func firstNonEmpty(_ values: [String?]) -> String {
+    for value in values {
+        let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+    }
+    return ""
+}
+
 func attrBool(_ element: AXUIElement, _ attr: String) -> Bool? {
     var value: CFTypeRef?
     if copyAttr(element, attr, &value) != .success {
@@ -483,12 +520,53 @@ func attrElement(_ element: AXUIElement, _ attr: String) -> AXUIElement? {
     return value as! AXUIElement?
 }
 
+func hasAction(_ element: AXUIElement, _ action: String) -> Bool {
+    var value: CFTypeRef?
+    if copyAttr(element, kAXActionsAttribute as String, &value) != .success {
+        return false
+    }
+    guard let actions = value as? [String] else {
+        return false
+    }
+    return actions.contains(action)
+}
+
+func attrParent(_ element: AXUIElement) -> AXUIElement? {
+    attrElement(element, kAXParentAttribute as String)
+}
+
+func normalizedLabels(_ element: AXUIElement) -> [String] {
+    [
+        attrString(element, kAXTitleAttribute as String),
+        attrString(element, kAXDescriptionAttribute as String),
+        attrString(element, kAXValueAttribute as String),
+        attrString(element, kAXHelpAttribute as String),
+    ]
+    .compactMap { value in
+        let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+func primaryLabel(_ element: AXUIElement) -> String {
+    firstNonEmpty([
+        attrString(element, kAXTitleAttribute as String),
+        attrString(element, kAXDescriptionAttribute as String),
+        attrString(element, kAXValueAttribute as String),
+        attrString(element, kAXHelpAttribute as String),
+    ])
+}
+
 func elementSummary(_ element: AXUIElement) -> [String: Any] {
+    let pressTarget = nearestPressableAncestor(element)
     [
         "role": attrString(element, kAXRoleAttribute as String) ?? "",
         "title": attrString(element, kAXTitleAttribute as String) ?? "",
         "description": attrString(element, kAXDescriptionAttribute as String) ?? "",
-        "enabled": attrBool(element, kAXEnabledAttribute as String) ?? false
+        "value": attrString(element, kAXValueAttribute as String) ?? "",
+        "enabled": attrBool(element, kAXEnabledAttribute as String) ?? false,
+        "has_press_action": hasAction(element, kAXPressAction as String),
+        "resolved_press_target_role": pressTarget.flatMap { attrString($0, kAXRoleAttribute as String) } ?? ""
     ]
 }
 
@@ -532,8 +610,21 @@ func findButtons(_ element: AXUIElement, matches: (String, String) -> Bool) -> [
     return results
 }
 
+func nearestPressableAncestor(_ element: AXUIElement) -> AXUIElement? {
+    var current: AXUIElement? = element
+    var depth = 0
+    while let node = current, depth < 12 {
+        if hasAction(node, kAXPressAction as String) {
+            return node
+        }
+        current = attrParent(node)
+        depth += 1
+    }
+    return nil
+}
+
 func preferredButtonLabel(_ title: String, _ desc: String) -> String {
-    return !title.isEmpty ? title : desc
+    return firstNonEmpty([title, desc])
 }
 
 func containsBlockingModal(_ element: AXUIElement) -> Bool {
@@ -566,6 +657,34 @@ func findSystemModalRoots(_ element: AXUIElement) -> [AXUIElement] {
     return searchRoots
 }
 
+let modalCandidateRoles = Set(["AXButton", "AXLink", "AXGroup", "AXStaticText", "AXUIElement"])
+
+func isModalTextMatch(_ element: AXUIElement) -> String? {
+    for label in normalizedLabels(element) {
+        if modalTitles.contains(label) && label != "一键换号" {
+            return label
+        }
+    }
+    return nil
+}
+
+func findModalCandidates(root: AXUIElement) -> [(Int, AXUIElement)] {
+    var weightedMatches: [(Int, AXUIElement)] = []
+    func walk(_ element: AXUIElement) {
+        let role = attrString(element, kAXRoleAttribute as String) ?? ""
+        if modalCandidateRoles.contains(role), let label = isModalTextMatch(element) {
+            if let priority = modalTitles.firstIndex(of: label) {
+                weightedMatches.append((priority, element))
+            }
+        }
+        for child in attrElements(element, kAXChildrenAttribute as String) {
+            walk(child)
+        }
+    }
+    walk(root)
+    return weightedMatches
+}
+
 func findModalButtons(window: AXUIElement, webArea: AXUIElement?) -> [AXUIElement] {
     var searchRoots = findSystemModalRoots(window)
     if let webArea {
@@ -573,33 +692,14 @@ func findModalButtons(window: AXUIElement, webArea: AXUIElement?) -> [AXUIElemen
     }
     var weightedMatches: [(Int, AXUIElement)] = []
     for root in searchRoots {
-        let buttons = findButtons(root, matches: { title, desc in
-            let candidate = preferredButtonLabel(title, desc)
-            return modalTitles.contains(candidate) && candidate != "一键换号"
-        }))
-        for button in buttons {
-            let candidate = preferredButtonLabel(
-                attrString(button, kAXTitleAttribute as String) ?? "",
-                attrString(button, kAXDescriptionAttribute as String) ?? ""
-            )
-            guard let priority = modalTitles.firstIndex(of: candidate) else {
-                continue
-            }
-            weightedMatches.append((priority, button))
-        }
+        weightedMatches.append(contentsOf: findModalCandidates(root: root))
     }
     weightedMatches.sort { lhs, rhs in
         if lhs.0 != rhs.0 {
             return lhs.0 < rhs.0
         }
-        let leftSummary = preferredButtonLabel(
-            attrString(lhs.1, kAXTitleAttribute as String) ?? "",
-            attrString(lhs.1, kAXDescriptionAttribute as String) ?? ""
-        )
-        let rightSummary = preferredButtonLabel(
-            attrString(rhs.1, kAXTitleAttribute as String) ?? "",
-            attrString(rhs.1, kAXDescriptionAttribute as String) ?? ""
-        )
+        let leftSummary = primaryLabel(lhs.1)
+        let rightSummary = primaryLabel(rhs.1)
         return leftSummary < rightSummary
     }
     return weightedMatches.map { $0.1 }
@@ -676,18 +776,33 @@ case "press-main":
 case "dismiss-modal":
     var payload = payloadBase
     if let button = modalButtons.first {
-        if press(button) {
-            payload["dismissed"] = true
-            payload["dismissed_button"] = elementSummary(button)
+        if let pressTarget = nearestPressableAncestor(button) {
+            if press(pressTarget) {
+                payload["dismissed"] = true
+                payload["dismissed_button"] = elementSummary(button)
+                if pressTarget as AnyObject !== button as AnyObject {
+                    payload["dismissed_press_target"] = elementSummary(pressTarget)
+                }
+            } else {
+                payload["ok"] = false
+                payload["error_code"] = "modal_blocking_unresolved"
+                payload["error_message"] = "Detected a blocking modal, matched a press target, but AXPress failed."
+                payload["failure_reason"] = "press target found but AXPress failed"
+                payload["dismiss_candidate"] = elementSummary(button)
+                payload["dismiss_press_target"] = elementSummary(pressTarget)
+            }
         } else {
             payload["ok"] = false
             payload["error_code"] = "modal_blocking_unresolved"
-            payload["error_message"] = "Detected a blocking modal, but failed to dismiss it."
+            payload["error_message"] = "Detected a blocking modal, matched a modal label, but no pressable ancestor was found."
+            payload["failure_reason"] = "matched modal text but no pressable ancestor"
+            payload["dismiss_candidate"] = elementSummary(button)
         }
     } else {
         payload["ok"] = false
         payload["error_code"] = "modal_blocking_unresolved"
         payload["error_message"] = "Detected a blocking modal, but no whitelisted button was found."
+        payload["failure_reason"] = "no whitelisted modal candidate found"
     }
     let data = try! JSONSerialization.data(withJSONObject: payload)
     print(String(data: data, encoding: .utf8)!)
@@ -747,6 +862,19 @@ def dismiss_ax_modal() -> dict[str, Any]:
     return run_ax_bridge("dismiss-modal", allow_activate=False)
 
 
+def log_modal_failure(stage: str, payload: dict[str, Any]) -> None:
+    details = {
+        "stage": stage,
+        "error_code": payload.get("error_code"),
+        "failure_reason": payload.get("failure_reason"),
+        "modal_button_count": payload.get("modal_button_count"),
+        "modal_buttons": payload.get("modal_buttons"),
+        "dismiss_candidate": payload.get("dismiss_candidate"),
+        "dismiss_press_target": payload.get("dismiss_press_target"),
+    }
+    log(f"modal inspection failed: {json.dumps(details, ensure_ascii=False, sort_keys=True)}")
+
+
 def trigger_ax_register_flow() -> dict[str, Any]:
     state.set_state(error_message="ax_button_scan_started")
     inspect = inspect_ax_state(allow_activate=False)
@@ -773,6 +901,7 @@ def trigger_ax_register_flow() -> dict[str, Any]:
         state.set_state(error_message="ax_web_modal_fallback_started")
         dismiss_result = dismiss_ax_modal()
         if not dismiss_result.get("ok") or not dismiss_result.get("dismissed"):
+            log_modal_failure("dismiss_modal", dismiss_result)
             raise RuntimeError(dismiss_result.get("error_code") or "modal_blocking_unresolved")
         time.sleep(0.4)
         inspect = inspect_ax_state(allow_activate=False)
@@ -783,6 +912,7 @@ def trigger_ax_register_flow() -> dict[str, Any]:
                 log("triggered one-click register via AXPress after modal dismissal")
                 return press_result
             raise RuntimeError(press_result.get("error_code") or "register_trigger_failed")
+        log_modal_failure("post_dismiss_rescan", inspect)
         raise RuntimeError("modal_blocking_unresolved")
 
     state.set_state(error_message="ax_window_restore_started")

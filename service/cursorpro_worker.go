@@ -45,10 +45,12 @@ type cursorProExportFile struct {
 }
 
 type CursorProImportResult struct {
-	Imported int `json:"imported"`
-	Updated  int `json:"updated"`
-	Skipped  int `json:"skipped"`
-	Total    int `json:"total"`
+	Imported            int `json:"imported"`
+	Updated             int `json:"updated"`
+	Skipped             int `json:"skipped"`
+	Total               int `json:"total"`
+	DeletedExports      int `json:"deleted_exports,omitempty"`
+	FailedExportDeletes int `json:"failed_export_deletes,omitempty"`
 }
 
 type CursorProReplacementResult struct {
@@ -675,6 +677,24 @@ type cursorProUpsertResult struct {
 	CapacityFull bool
 }
 
+type cursorProConsumedExport struct {
+	path string
+	name string
+}
+
+func deleteConsumedExportFiles(files []cursorProConsumedExport) (deleted int, failed int) {
+	for _, consumed := range files {
+		if err := os.Remove(consumed.path); err != nil {
+			failed++
+			common.SysError(fmt.Sprintf("failed to delete consumed export file: file=%s err=%v", consumed.name, err))
+			continue
+		}
+		deleted++
+		common.SysLog(fmt.Sprintf("consumed export file deleted: %s", consumed.name))
+	}
+	return deleted, failed
+}
+
 func resetImportedCursorProMeta(meta model.ChannelKeyMeta, item *cursorProExportFile) model.ChannelKeyMeta {
 	meta.State = model.CodexKeyStateNew
 	meta.NewSuccessCount = 0
@@ -855,6 +875,7 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 
 	result := &CursorProImportResult{}
 	importedIndexes := make([]int, 0)
+	consumedExports := make([]cursorProConsumedExport, 0)
 	replacedCount := 0
 	capacityFullCount := 0
 	for _, entry := range entries {
@@ -862,7 +883,8 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 			continue
 		}
 		result.Total++
-		item, err := parseCursorProExportFile(filepath.Join(exportDir, entry.Name()))
+		exportPath := filepath.Join(exportDir, entry.Name())
+		item, err := parseCursorProExportFile(exportPath)
 		if err != nil || item == nil {
 			result.Skipped++
 			continue
@@ -886,8 +908,10 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 				replacedCount++
 			}
 			importedIndexes = append(importedIndexes, upsert.Index)
+			consumedExports = append(consumedExports, cursorProConsumedExport{path: exportPath, name: entry.Name()})
 		} else if upsert.Updated {
 			result.Updated++
+			consumedExports = append(consumedExports, cursorProConsumedExport{path: exportPath, name: entry.Name()})
 		} else {
 			result.Skipped++
 		}
@@ -907,6 +931,7 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 		model.InitChannelCache()
 	}
 	ResetProxyClientCache()
+	result.DeletedExports, result.FailedExportDeletes = deleteConsumedExportFiles(consumedExports)
 	for _, index := range importedIndexes {
 		EnqueueCodexNewKeyProbe(channel.Id, index, "probe_pending")
 	}
