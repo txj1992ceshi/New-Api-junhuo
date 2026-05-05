@@ -371,6 +371,9 @@ func deriveTriggerResult(state *cursorProTriggerState, registerStatus *cursorPro
 		return "trigger_no_yield_cooldown"
 	}
 	if state != nil {
+		if state.LastResultStatus == "failed" && state.LastErrorCode == cursorProResultCodeControl {
+			return cursorProResultCodeControl
+		}
 		switch state.LastResultStatus {
 		case "failed":
 			return "trigger_failed"
@@ -403,6 +406,8 @@ func deriveRecoveryResult(state *cursorProTriggerState, registerStatus *cursorPr
 		return "imported_pending_probe"
 	case state.LastSuccessfulRecoveryReason != "":
 		return state.LastSuccessfulRecoveryReason
+	case state.LastResultStatus == "failed" && state.LastErrorCode == cursorProResultCodeControl:
+		return cursorProResultCodeControl
 	case state.LastResultStatus == "failed" && state.LastErrorCode == cursorProResultCodeNoYield:
 		return "register_no_yield"
 	case state.LastResultStatus == "failed":
@@ -486,6 +491,12 @@ func GetCursorProReplacementStatus(ctx context.Context, channelID int, now time.
 	}
 
 	state := getCursorProTriggerSnapshot(channelID, now)
+	if registerStatusErr != "" && tokenStatusErr != "" && state.LastResultStatus == "running" {
+		state.LastResultStatus = "failed"
+		state.LastErrorCode = cursorProResultCodeControl
+		state.LastErrorMessage = "CursorPro control service is unreachable."
+		state.LastTaskFinishedAt = now.Format(time.RFC3339)
+	}
 	cooldownDecision := evaluateCursorProTriggerCooldown(state, registerStatus, tokenStatus, health, recentNoAvailable, recentHotPathTriggers, now)
 	timeline := buildCursorProRecoveryTimeline(state, registerStatus, tokenStatus)
 

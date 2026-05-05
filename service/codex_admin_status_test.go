@@ -18,3 +18,23 @@ func TestDeriveRecoveryResultReportsNoYield(t *testing.T) {
 		t.Fatalf("unexpected recovery result: %s", result)
 	}
 }
+
+func TestDeriveTriggerResultReportsControlUnreachable(t *testing.T) {
+	result := deriveTriggerResult(&cursorProTriggerState{
+		LastResultStatus: "failed",
+		LastErrorCode:    cursorProResultCodeControl,
+	}, nil, "")
+	if result != cursorProResultCodeControl {
+		t.Fatalf("unexpected trigger result: %s", result)
+	}
+}
+
+func TestDeriveRecoveryResultReportsControlUnreachable(t *testing.T) {
+	result := deriveRecoveryResult(&cursorProTriggerState{
+		LastResultStatus: "failed",
+		LastErrorCode:    cursorProResultCodeControl,
+	}, nil, nil, nil)
+	if result != cursorProResultCodeControl {
+		t.Fatalf("unexpected recovery result: %s", result)
+	}
+}

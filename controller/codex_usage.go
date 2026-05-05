@@ -57,6 +57,35 @@ type codexUsageCredential struct {
 	KeyIndex     int
 }
 
+func codexUsageSelectionFailureMessage(ch *model.Channel, err error) string {
+	if err == nil {
+		return ""
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "no available codex keys") {
+		health := service.ComputeCodexPoolHealth(ch, time.Now())
+		if health != nil && health.Total > 0 && health.Dead == health.Total {
+			return "all_keys_dead"
+		}
+		return "no_available_codex_keys"
+	}
+	return "invalid_codex_credential_payload"
+}
+
+func codexUsageFetchFailureMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(message, "access_token is required"), strings.Contains(message, "empty accesstoken"):
+		return "missing_access_token"
+	case strings.Contains(message, "account_id is required"), strings.Contains(message, "empty accountid"):
+		return "missing_account_id"
+	default:
+		return "upstream_fetch_failed"
+	}
+}
+
 func selectCodexUsageCredential(ch *model.Channel, excluded map[int]bool, now time.Time) (*codexUsageCredential, error) {
 	if ch == nil {
 		return nil, fmt.Errorf("channel not found")
@@ -162,7 +191,7 @@ func GetCodexChannelUsage(c *gin.Context) {
 		selected, err = selectCodexUsageCredential(ch, excluded, time.Now())
 		if err != nil {
 			if lastMessage == "" {
-				lastMessage = "解析凭证失败，请检查渠道配置"
+				lastMessage = codexUsageSelectionFailureMessage(ch, err)
 			}
 			break
 		}
@@ -172,7 +201,7 @@ func GetCodexChannelUsage(c *gin.Context) {
 		cancel()
 		if fetchErr != nil {
 			common.SysError("failed to fetch codex usage: " + fetchErr.Error())
-			lastMessage = "获取用量信息失败，请稍后重试"
+			lastMessage = codexUsageFetchFailureMessage(fetchErr)
 			break
 		}
 
@@ -196,7 +225,7 @@ func GetCodexChannelUsage(c *gin.Context) {
 				cancel2()
 				if fetchErr != nil {
 					common.SysError("failed to fetch codex usage after refresh: " + fetchErr.Error())
-					lastMessage = "获取用量信息失败，请稍后重试"
+					lastMessage = codexUsageFetchFailureMessage(fetchErr)
 					break
 				}
 			}
@@ -209,7 +238,7 @@ func GetCodexChannelUsage(c *gin.Context) {
 		if ch.ChannelInfo.IsMultiKey {
 			excluded[selected.KeyIndex] = true
 		}
-		lastMessage = fmt.Sprintf("upstream status: %d", statusCode)
+		lastMessage = fmt.Sprintf("upstream_status_%d", statusCode)
 	}
 
 	if fetchErr != nil {
@@ -217,7 +246,11 @@ func GetCodexChannelUsage(c *gin.Context) {
 		return
 	}
 	if len(body) == 0 {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "获取用量信息失败，请稍后重试"})
+		message := lastMessage
+		if message == "" {
+			message = "upstream_fetch_failed"
+		}
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": message})
 		return
 	}
 

@@ -111,6 +111,14 @@ func RunCodexPoolSupervisorOnce(ctx context.Context) {
 			))
 			channel, _ = model.GetChannelById(channel.Id, true)
 		}
+		health := ComputeCodexPoolHealth(channel, now)
+		if prunedCount, err := PruneManagedCursorProDeadKeys(channel.Id, health, now); err != nil {
+			logger.LogWarn(ctx, fmt.Sprintf("codex pool supervisor: channel_id=%d dead prune failed: %v", channel.Id, err))
+		} else if prunedCount > 0 {
+			logger.LogInfo(ctx, fmt.Sprintf("codex pool supervisor: channel_id=%d pruned dead keys: count=%d", channel.Id, prunedCount))
+			channel, _ = model.GetChannelById(channel.Id, true)
+			health = ComputeCodexPoolHealth(channel, now)
+		}
 		tokenStatus, _ := readCursorProTokenStatus(ctx)
 		state := cursorProStateForChannel(channel.Id)
 		updateCursorProSourceQuietSince(state, tokenStatus, now)
@@ -119,7 +127,6 @@ func RunCodexPoolSupervisorOnce(ctx context.Context) {
 			_, _ = ImportCursorProExports(ctx, channel.Id)
 			continue
 		}
-		health := ComputeCodexPoolHealth(channel, now)
 		if health == nil {
 			continue
 		}

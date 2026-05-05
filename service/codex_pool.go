@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,6 +25,12 @@ type codexKeyScrubStats struct {
 	Normalized    int
 	InvalidDead   int
 	RateLimitDead int
+}
+
+type cursorProDeadPruneCandidate struct {
+	index       int
+	priority    int
+	lastErrorAt int64
 }
 
 func SelectCodexKey(channel *model.Channel, excluded map[int]bool, now time.Time) (*CodexKeySelection, *types.NewAPIError) {
@@ -453,4 +460,163 @@ func ScrubCodexChannelKeys(channelID int, now time.Time) (*codexKeyScrubStats, e
 func validateCodexOAuthKeyPayload(raw string) string {
 	_, _, invalidReason, _ := normalizeCodexOAuthKeyRaw(raw)
 	return invalidReason
+}
+
+func shouldPruneManagedCursorProDeadKeys(channel *model.Channel, health *CodexPoolHealth) bool {
+	if !isManagedCursorProChannel(channel) || health == nil {
+		return false
+	}
+	if health.AvailableCount != 0 || health.Total <= 0 {
+		return false
+	}
+	if health.Dead < 20 {
+		return false
+	}
+	return health.Dead*2 >= health.Total
+}
+
+func cursorProDeadPrunePriority(meta model.ChannelKeyMeta, now time.Time) (int, bool) {
+	if meta.State != model.CodexKeyStateDead || meta.LastErrorAt <= 0 {
+		return 0, false
+	}
+	if now.Sub(time.Unix(meta.LastErrorAt, 0)) < 10*time.Minute {
+		return 0, false
+	}
+	lastError := strings.ToLower(strings.TrimSpace(meta.LastErrorKind))
+	switch {
+	case lastError == "rate_limit_exhausted":
+		return 1, true
+	case strings.HasPrefix(lastError, "invalid"):
+		return 2, true
+	case lastError == "rate_limit":
+		return 3, true
+	default:
+		return 0, false
+	}
+}
+
+func rebuildChannelKeyStateMapsAfterPrune(
+	channel *model.Channel,
+	keys []string,
+	kept map[int]int,
+) {
+	newMeta := make(map[int]model.ChannelKeyMeta, len(keys))
+	for oldIdx, newIdx := range kept {
+		if meta, ok := channel.ChannelInfo.MultiKeyMeta[oldIdx]; ok {
+			newMeta[newIdx] = meta
+		}
+	}
+	channel.ChannelInfo.MultiKeyMeta = newMeta
+
+	if channel.ChannelInfo.MultiKeyStatusList != nil {
+		newStatus := make(map[int]int, len(keys))
+		for oldIdx, newIdx := range kept {
+			if status, ok := channel.ChannelInfo.MultiKeyStatusList[oldIdx]; ok {
+				newStatus[newIdx] = status
+			}
+		}
+		channel.ChannelInfo.MultiKeyStatusList = newStatus
+	}
+	if channel.ChannelInfo.MultiKeyDisabledReason != nil {
+		newReasons := make(map[int]string, len(keys))
+		for oldIdx, newIdx := range kept {
+			if reason, ok := channel.ChannelInfo.MultiKeyDisabledReason[oldIdx]; ok {
+				newReasons[newIdx] = reason
+			}
+		}
+		channel.ChannelInfo.MultiKeyDisabledReason = newReasons
+	}
+	if channel.ChannelInfo.MultiKeyDisabledTime != nil {
+		newTimes := make(map[int]int64, len(keys))
+		for oldIdx, newIdx := range kept {
+			if disabledAt, ok := channel.ChannelInfo.MultiKeyDisabledTime[oldIdx]; ok {
+				newTimes[newIdx] = disabledAt
+			}
+		}
+		channel.ChannelInfo.MultiKeyDisabledTime = newTimes
+	}
+	channel.ChannelInfo.MultiKeySize = len(keys)
+	channel.ChannelInfo.IsMultiKey = len(keys) > 1
+	if len(keys) == 0 {
+		channel.ChannelInfo.MultiKeyPollingIndex = 0
+		return
+	}
+	if channel.ChannelInfo.MultiKeyPollingIndex >= len(keys) || channel.ChannelInfo.MultiKeyPollingIndex < 0 {
+		channel.ChannelInfo.MultiKeyPollingIndex = 0
+	}
+}
+
+func PruneManagedCursorProDeadKeys(channelID int, health *CodexPoolHealth, now time.Time) (int, error) {
+	channel, guard, err := loadCodexChannelForUpdate(channelID)
+	if err != nil {
+		return 0, err
+	}
+	defer guard.Done()
+	if channel == nil {
+		return 0, fmt.Errorf("channel %d not found", channelID)
+	}
+	if !shouldPruneManagedCursorProDeadKeys(channel, health) {
+		return 0, nil
+	}
+
+	keys := channel.GetKeys()
+	candidates := make([]cursorProDeadPruneCandidate, 0, len(keys))
+	for i := range keys {
+		meta := normalizeServiceCodexKeyMeta(channel.GetKeyMeta(i))
+		priority, ok := cursorProDeadPrunePriority(meta, now)
+		if !ok {
+			continue
+		}
+		candidates = append(candidates, cursorProDeadPruneCandidate{
+			index:       i,
+			priority:    priority,
+			lastErrorAt: meta.LastErrorAt,
+		})
+	}
+	if len(candidates) == 0 {
+		return 0, nil
+	}
+
+	slices.SortFunc(candidates, func(a, b cursorProDeadPruneCandidate) int {
+		if a.priority != b.priority {
+			return a.priority - b.priority
+		}
+		if a.lastErrorAt != b.lastErrorAt {
+			if a.lastErrorAt < b.lastErrorAt {
+				return -1
+			}
+			return 1
+		}
+		return a.index - b.index
+	})
+
+	pruneCount := min(len(candidates), 10)
+	pruned := make(map[int]bool, pruneCount)
+	for _, candidate := range candidates[:pruneCount] {
+		pruned[candidate.index] = true
+	}
+
+	newKeys := make([]string, 0, len(keys)-pruneCount)
+	kept := make(map[int]int, len(keys)-pruneCount)
+	for i, key := range keys {
+		if pruned[i] {
+			continue
+		}
+		kept[i] = len(newKeys)
+		newKeys = append(newKeys, key)
+	}
+	channel.Key = strings.Join(newKeys, "\n")
+	rebuildChannelKeyStateMapsAfterPrune(channel, newKeys, kept)
+
+	if err := model.DB.Model(&model.Channel{}).Where("id = ?", channel.Id).Updates(map[string]any{
+		"key":          channel.Key,
+		"channel_info": channel.ChannelInfo,
+	}).Error; err != nil {
+		return 0, err
+	}
+	if common.MemoryCacheEnabled {
+		model.CacheUpdateChannel(channel)
+	}
+	ResetProxyClientCache()
+	return pruneCount, nil
 }

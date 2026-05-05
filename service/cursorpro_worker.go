@@ -22,7 +22,10 @@ import (
 const (
 	defaultCursorProControlURL  = "http://127.0.0.1:18765"
 	cursorProResultCodeNoYield  = "register_no_yield"
+	cursorProResultCodeControl  = "control_unreachable"
 	cursorProBlockReasonNoYield = "recent_no_yield"
+	cursorProManagedChannelID   = 2
+	cursorProManagedPoolCap     = 100
 )
 
 type cursorProExportFile struct {
@@ -170,6 +173,17 @@ func cursorProControlBaseURL() string {
 		base = defaultCursorProControlURL
 	}
 	return strings.TrimRight(base, "/")
+}
+
+func isManagedCursorProChannel(channel *model.Channel) bool {
+	return channel != nil && channel.Id == cursorProManagedChannelID
+}
+
+func managedCursorProPoolCapacity(channel *model.Channel) int {
+	if isManagedCursorProChannel(channel) {
+		return cursorProManagedPoolCap
+	}
+	return 0
 }
 
 func cursorProStateForChannel(channelID int) *cursorProTriggerState {
@@ -538,8 +552,13 @@ func TriggerCursorProReplacement(ctx context.Context, channelID int, reason stri
 	}
 	state := cursorProStateForChannel(channelID)
 	now := time.Now()
-	tokenStatus, _ := readCursorProTokenStatus(ctx)
-	registerStatus, _ := readCursorProRegisterStatus(ctx)
+	tokenStatus, tokenStatusErr := readCursorProTokenStatus(ctx)
+	registerStatus, registerStatusErr := readCursorProRegisterStatus(ctx)
+	if registerStatusErr != nil && tokenStatusErr != nil && state != nil {
+		state.LastResultStatus = "failed"
+		state.LastErrorCode = cursorProResultCodeControl
+		state.LastErrorMessage = "CursorPro control service is unreachable."
+	}
 	health, recentNoAvailable, recentHotPath := loadCursorProCooldownContext(channelID, now)
 	mode := cursorProReplacementModeFromChannelID(channelID)
 	updateCursorProSourceQuietSince(state, tokenStatus, now)
@@ -648,7 +667,107 @@ func parseCursorProExportFile(path string) (*cursorProExportFile, error) {
 	return &item, nil
 }
 
-func upsertCursorProToken(channel *model.Channel, key string, item *cursorProExportFile) (int, bool, bool) {
+type cursorProUpsertResult struct {
+	Index        int
+	Imported     bool
+	Updated      bool
+	Replaced     bool
+	CapacityFull bool
+}
+
+func resetImportedCursorProMeta(meta model.ChannelKeyMeta, item *cursorProExportFile) model.ChannelKeyMeta {
+	meta.State = model.CodexKeyStateNew
+	meta.NewSuccessCount = 0
+	meta.Consecutive429 = 0
+	meta.Consecutive5xx = 0
+	meta.ConsecutiveAuthFail = 0
+	meta.SoftFailCount = 0
+	meta.CooldownUntil = 0
+	meta.LastSelectedAt = 0
+	meta.LastSuccessAt = 0
+	meta.LastErrorAt = 0
+	meta.LastErrorKind = ""
+	if item != nil {
+		if strings.TrimSpace(item.Source) != "" {
+			meta.Source = strings.TrimSpace(item.Source)
+		} else {
+			meta.Source = "cursorpro3"
+		}
+		meta.AccountID = strings.TrimSpace(item.AccountID)
+		meta.Email = strings.TrimSpace(item.Email)
+		meta.ExpiresAt = strings.TrimSpace(item.ExpiresAt)
+	}
+	return meta
+}
+
+func replaceCursorProTokenAtIndex(channel *model.Channel, index int, key string, item *cursorProExportFile) cursorProUpsertResult {
+	keys := channel.GetKeys()
+	keys[index] = key
+	channel.Key = strings.Join(keys, "\n")
+	meta := hydrateCodexKeyMeta(key, channel.GetKeyMeta(index))
+	meta = resetImportedCursorProMeta(meta, item)
+	channel.SetKeyMeta(index, meta)
+	return cursorProUpsertResult{
+		Index:    index,
+		Imported: true,
+		Replaced: true,
+	}
+}
+
+func cursorProDeadReplacePriority(meta model.ChannelKeyMeta) (int, bool) {
+	if meta.State != model.CodexKeyStateDead {
+		return 0, false
+	}
+	lastError := strings.ToLower(strings.TrimSpace(meta.LastErrorKind))
+	switch {
+	case lastError == "rate_limit_exhausted":
+		return 1, true
+	case strings.HasPrefix(lastError, "invalid"):
+		return 2, true
+	case lastError == "rate_limit":
+		return 3, true
+	default:
+		return 0, false
+	}
+}
+
+func findReplaceableCursorProDeadSlot(channel *model.Channel) int {
+	if channel == nil {
+		return -1
+	}
+	keys := channel.GetKeys()
+	type candidate struct {
+		index       int
+		priority    int
+		lastErrorAt int64
+	}
+	var best *candidate
+	for i := range keys {
+		meta := channel.GetKeyMeta(i)
+		priority, ok := cursorProDeadReplacePriority(meta)
+		if !ok {
+			continue
+		}
+		current := candidate{
+			index:       i,
+			priority:    priority,
+			lastErrorAt: meta.LastErrorAt,
+		}
+		if best == nil ||
+			current.priority < best.priority ||
+			(current.priority == best.priority && current.lastErrorAt < best.lastErrorAt) ||
+			(current.priority == best.priority && current.lastErrorAt == best.lastErrorAt && current.index < best.index) {
+			tmp := current
+			best = &tmp
+		}
+	}
+	if best == nil {
+		return -1
+	}
+	return best.index
+}
+
+func upsertCursorProToken(channel *model.Channel, key string, item *cursorProExportFile) cursorProUpsertResult {
 	keys := channel.GetKeys()
 	accountID := strings.TrimSpace(item.AccountID)
 	email := strings.TrimSpace(item.Email)
@@ -663,8 +782,25 @@ func upsertCursorProToken(channel *model.Channel, key string, item *cursorProExp
 			keys[i] = key
 			channel.Key = strings.Join(keys, "\n")
 			meta := hydrateCodexKeyMeta(key, channel.GetKeyMeta(i))
+			if updated {
+				meta = resetImportedCursorProMeta(meta, item)
+			}
 			channel.SetKeyMeta(i, meta)
-			return i, false, updated
+			return cursorProUpsertResult{
+				Index:   i,
+				Updated: updated,
+			}
+		}
+	}
+
+	if replaceIndex := findReplaceableCursorProDeadSlot(channel); replaceIndex >= 0 {
+		return replaceCursorProTokenAtIndex(channel, replaceIndex, key, item)
+	}
+
+	if capacity := managedCursorProPoolCapacity(channel); capacity > 0 && len(keys) >= capacity {
+		return cursorProUpsertResult{
+			Index:        -1,
+			CapacityFull: true,
 		}
 	}
 
@@ -672,28 +808,12 @@ func upsertCursorProToken(channel *model.Channel, key string, item *cursorProExp
 	channel.Key = strings.Join(keys, "\n")
 	idx := len(keys) - 1
 	meta := hydrateCodexKeyMeta(key, channel.GetKeyMeta(idx))
-	meta.State = model.CodexKeyStateNew
-	meta.NewSuccessCount = 0
-	meta.Consecutive429 = 0
-	meta.Consecutive5xx = 0
-	meta.ConsecutiveAuthFail = 0
-	meta.SoftFailCount = 0
-	meta.CooldownUntil = 0
-	meta.LastSelectedAt = 0
-	meta.LastSuccessAt = 0
-	meta.LastErrorAt = 0
-	if item != nil {
-		if strings.TrimSpace(item.Source) != "" {
-			meta.Source = strings.TrimSpace(item.Source)
-		} else {
-			meta.Source = "cursorpro3"
-		}
-		meta.AccountID = strings.TrimSpace(item.AccountID)
-		meta.Email = strings.TrimSpace(item.Email)
-		meta.ExpiresAt = strings.TrimSpace(item.ExpiresAt)
-	}
+	meta = resetImportedCursorProMeta(meta, item)
 	channel.SetKeyMeta(idx, meta)
-	return idx, true, false
+	return cursorProUpsertResult{
+		Index:    idx,
+		Imported: true,
+	}
 }
 
 func finalizeCodexMultiKeyChannel(channel *model.Channel) {
@@ -735,6 +855,8 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 
 	result := &CursorProImportResult{}
 	importedIndexes := make([]int, 0)
+	replacedCount := 0
+	capacityFullCount := 0
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
 			continue
@@ -754,11 +876,17 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 			result.Skipped++
 			continue
 		}
-		index, imported, updated := upsertCursorProToken(channel, key, item)
-		if imported {
+		upsert := upsertCursorProToken(channel, key, item)
+		if upsert.CapacityFull {
+			capacityFullCount++
+			result.Skipped++
+		} else if upsert.Imported {
 			result.Imported++
-			importedIndexes = append(importedIndexes, index)
-		} else if updated {
+			if upsert.Replaced {
+				replacedCount++
+			}
+			importedIndexes = append(importedIndexes, upsert.Index)
+		} else if upsert.Updated {
 			result.Updated++
 		} else {
 			result.Skipped++
@@ -790,12 +918,17 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 		state.LastImportSkipped = result.Skipped
 		state.LastImportTotal = result.Total
 		switch {
+		case replacedCount > 0:
+			state.LastImportResult = "replaced_dead_tokens"
+			recordCursorProSuccessfulRecovery(state, state.LastImportAt, state.LastImportResult)
 		case result.Imported > 0:
 			state.LastImportResult = "imported_to_channel"
 			recordCursorProSuccessfulRecovery(state, state.LastImportAt, state.LastImportResult)
 		case result.Updated > 0:
 			state.LastImportResult = "updated_existing_tokens"
 			recordCursorProSuccessfulRecovery(state, state.LastImportAt, state.LastImportResult)
+		case capacityFullCount > 0:
+			state.LastImportResult = "capacity_full_no_replacement"
 		case result.Total > 0:
 			state.LastImportResult = "no_new_tokens_imported"
 		default:

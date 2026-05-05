@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,9 +39,9 @@ func TestUpsertCursorProTokenAppendsNewKeyAsNewState(t *testing.T) {
 		t.Fatalf("unexpected build error: %v", err)
 	}
 
-	_, imported, updated := upsertCursorProToken(channel, key, item)
-	if !imported || updated {
-		t.Fatalf("expected imported=true updated=false, got imported=%v updated=%v", imported, updated)
+	result := upsertCursorProToken(channel, key, item)
+	if !result.Imported || result.Updated {
+		t.Fatalf("expected imported=true updated=false, got %+v", result)
 	}
 
 	finalizeCodexMultiKeyChannel(channel)
@@ -53,6 +55,136 @@ func TestUpsertCursorProTokenAppendsNewKeyAsNewState(t *testing.T) {
 	}
 	if meta.AccountID != item.AccountID || meta.Email != item.Email {
 		t.Fatalf("unexpected imported meta: %+v", meta)
+	}
+}
+
+func TestUpsertCursorProTokenUpdatesExistingAccountAndResetsDeadMeta(t *testing.T) {
+	channel := &model.Channel{
+		Id:   cursorProManagedChannelID,
+		Type: constant.ChannelTypeCodex,
+		Key:  `{"access_token":"old","refresh_token":"old-rt","account_id":"acct-1","email":"old@example.com","type":"codex"}`,
+		ChannelInfo: model.ChannelInfo{
+			MultiKeyMeta: map[int]model.ChannelKeyMeta{
+				0: {
+					State:         model.CodexKeyStateDead,
+					LastErrorKind: "rate_limit",
+					LastErrorAt:   time.Now().Add(-time.Hour).Unix(),
+					CooldownUntil: time.Now().Add(time.Hour).Unix(),
+				},
+			},
+		},
+	}
+	item := &cursorProExportFile{
+		AccountID: "acct-1",
+		Email:     "new@example.com",
+		ExpiresAt: "2026-05-09T00:00:00Z",
+		Source:    "cursorpro3",
+	}
+	item.Raw.AccessToken = "new-at"
+	item.Raw.RefreshToken = "new-rt"
+	item.Raw.IDToken = "new-id"
+
+	key, err := buildCodexOAuthKeyFromCursorProExport(*item)
+	if err != nil {
+		t.Fatalf("unexpected build error: %v", err)
+	}
+
+	result := upsertCursorProToken(channel, key, item)
+	if !result.Updated || result.Imported || result.Replaced || result.CapacityFull {
+		t.Fatalf("unexpected upsert result: %+v", result)
+	}
+	meta := channel.GetKeyMeta(0)
+	if meta.State != model.CodexKeyStateNew || meta.LastErrorKind != "" || meta.LastErrorAt != 0 || meta.CooldownUntil != 0 {
+		t.Fatalf("expected refreshed token meta to be reset as new, got %+v", meta)
+	}
+	if meta.Email != item.Email || meta.AccountID != item.AccountID {
+		t.Fatalf("unexpected refreshed meta identity: %+v", meta)
+	}
+}
+
+func TestUpsertCursorProTokenReplacesDeadSlotAtManagedCapacity(t *testing.T) {
+	keys := make([]string, 0, cursorProManagedPoolCap)
+	meta := make(map[int]model.ChannelKeyMeta, cursorProManagedPoolCap)
+	for i := 0; i < cursorProManagedPoolCap; i++ {
+		keys = append(keys, `{"access_token":"at-`+strconv.Itoa(i)+`","refresh_token":"rt-`+strconv.Itoa(i)+`","account_id":"acct-`+strconv.Itoa(i)+`","email":"user`+strconv.Itoa(i)+`@example.com","type":"codex"}`)
+		meta[i] = model.ChannelKeyMeta{State: model.CodexKeyStateHealthy}
+	}
+	meta[17] = model.ChannelKeyMeta{
+		State:         model.CodexKeyStateDead,
+		LastErrorKind: "rate_limit_exhausted",
+		LastErrorAt:   time.Now().Add(-2 * time.Hour).Unix(),
+		CooldownUntil: time.Now().Add(time.Hour).Unix(),
+	}
+	channel := &model.Channel{
+		Id:   cursorProManagedChannelID,
+		Type: constant.ChannelTypeCodex,
+		Key:  strings.Join(keys, "\n"),
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeySize: len(keys),
+			MultiKeyMeta: meta,
+		},
+	}
+	item := &cursorProExportFile{
+		AccountID: "fresh-account",
+		Email:     "fresh@example.com",
+		ExpiresAt: "2026-05-09T00:00:00Z",
+		Source:    "cursorpro3",
+	}
+	item.Raw.AccessToken = "fresh-at"
+	item.Raw.RefreshToken = "fresh-rt"
+
+	key, err := buildCodexOAuthKeyFromCursorProExport(*item)
+	if err != nil {
+		t.Fatalf("unexpected build error: %v", err)
+	}
+
+	result := upsertCursorProToken(channel, key, item)
+	if !result.Imported || !result.Replaced || result.CapacityFull {
+		t.Fatalf("unexpected upsert result: %+v", result)
+	}
+	if result.Index != 17 {
+		t.Fatalf("expected dead slot 17 to be replaced, got %d", result.Index)
+	}
+	slotMeta := channel.GetKeyMeta(17)
+	if slotMeta.State != model.CodexKeyStateNew || slotMeta.LastErrorKind != "" || slotMeta.LastErrorAt != 0 {
+		t.Fatalf("expected replaced slot to reset to new, got %+v", slotMeta)
+	}
+}
+
+func TestUpsertCursorProTokenSkipsWhenManagedCapacityFullWithoutReplaceableDead(t *testing.T) {
+	keys := make([]string, 0, cursorProManagedPoolCap)
+	meta := make(map[int]model.ChannelKeyMeta, cursorProManagedPoolCap)
+	for i := 0; i < cursorProManagedPoolCap; i++ {
+		keys = append(keys, `{"access_token":"at-`+strconv.Itoa(i)+`","refresh_token":"rt-`+strconv.Itoa(i)+`","account_id":"acct-`+strconv.Itoa(i)+`","email":"user`+strconv.Itoa(i)+`@example.com","type":"codex"}`)
+		meta[i] = model.ChannelKeyMeta{State: model.CodexKeyStateHealthy}
+	}
+	channel := &model.Channel{
+		Id:   cursorProManagedChannelID,
+		Type: constant.ChannelTypeCodex,
+		Key:  strings.Join(keys, "\n"),
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeySize: len(keys),
+			MultiKeyMeta: meta,
+		},
+	}
+	item := &cursorProExportFile{
+		AccountID: "fresh-account",
+		Email:     "fresh@example.com",
+		Source:    "cursorpro3",
+	}
+	item.Raw.AccessToken = "fresh-at"
+	item.Raw.RefreshToken = "fresh-rt"
+
+	key, err := buildCodexOAuthKeyFromCursorProExport(*item)
+	if err != nil {
+		t.Fatalf("unexpected build error: %v", err)
+	}
+
+	result := upsertCursorProToken(channel, key, item)
+	if !result.CapacityFull || result.Imported || result.Updated || result.Replaced {
+		t.Fatalf("unexpected upsert result: %+v", result)
 	}
 }
 
