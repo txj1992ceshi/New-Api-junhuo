@@ -1,8 +1,11 @@
 package service
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,8 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
 )
 
 func TestUpsertCursorProTokenAppendsNewKeyAsNewState(t *testing.T) {
@@ -41,7 +47,7 @@ func TestUpsertCursorProTokenAppendsNewKeyAsNewState(t *testing.T) {
 	}
 
 	result := upsertCursorProToken(channel, key, item)
-	if !result.Imported || result.Updated {
+	if result.Status != cursorProUpsertStatusImported || result.Replaced || result.Index != 1 {
 		t.Fatalf("expected imported=true updated=false, got %+v", result)
 	}
 
@@ -91,7 +97,7 @@ func TestUpsertCursorProTokenUpdatesExistingAccountAndResetsDeadMeta(t *testing.
 	}
 
 	result := upsertCursorProToken(channel, key, item)
-	if !result.Updated || result.Imported || result.Replaced || result.CapacityFull {
+	if result.Status != cursorProUpsertStatusUpdated || result.Replaced {
 		t.Fatalf("unexpected upsert result: %+v", result)
 	}
 	meta := channel.GetKeyMeta(0)
@@ -141,7 +147,7 @@ func TestUpsertCursorProTokenReplacesDeadSlotAtManagedCapacity(t *testing.T) {
 	}
 
 	result := upsertCursorProToken(channel, key, item)
-	if !result.Imported || !result.Replaced || result.CapacityFull {
+	if result.Status != cursorProUpsertStatusImported || !result.Replaced {
 		t.Fatalf("unexpected upsert result: %+v", result)
 	}
 	if result.Index != 17 {
@@ -184,8 +190,58 @@ func TestUpsertCursorProTokenSkipsWhenManagedCapacityFullWithoutReplaceableDead(
 	}
 
 	result := upsertCursorProToken(channel, key, item)
-	if !result.CapacityFull || result.Imported || result.Updated || result.Replaced {
+	if result.Status != cursorProUpsertStatusCapacityFull || result.Replaced {
 		t.Fatalf("unexpected upsert result: %+v", result)
+	}
+}
+
+func TestUpsertCursorProTokenMarksConsumedNoChangeWhenExistingKeyMatches(t *testing.T) {
+	channel := &model.Channel{
+		Id:   1,
+		Type: constant.ChannelTypeCodex,
+		ChannelInfo: model.ChannelInfo{
+			MultiKeyMeta: map[int]model.ChannelKeyMeta{
+				0: {
+					State:     model.CodexKeyStateHealthy,
+					AccountID: "acct-1",
+					Email:     "same@example.com",
+				},
+			},
+		},
+	}
+	item := &cursorProExportFile{
+		AccountID: "acct-1",
+		Email:     "same@example.com",
+		ExpiresAt: "2026-05-09T00:00:00Z",
+		Source:    "cursorpro3",
+	}
+	item.Raw.AccessToken = "same-at"
+	item.Raw.RefreshToken = "same-rt"
+	item.Raw.IDToken = "same-id"
+
+	key, err := buildCodexOAuthKeyFromCursorProExport(*item)
+	if err != nil {
+		t.Fatalf("unexpected build error: %v", err)
+	}
+
+	channel.Key = key
+	originalKey := channel.Key
+	originalMeta := channel.GetKeyMeta(0)
+
+	result := upsertCursorProToken(channel, key, item)
+	if result.Status != cursorProUpsertStatusConsumedNoChange || result.Replaced {
+		t.Fatalf("unexpected upsert result: %+v", result)
+	}
+	if channel.Key != originalKey {
+		t.Fatalf("expected channel key unchanged")
+	}
+	if got := channel.GetKeyMeta(0); got.State != originalMeta.State ||
+		got.AccountID != originalMeta.AccountID ||
+		got.Email != originalMeta.Email ||
+		got.LastErrorKind != originalMeta.LastErrorKind ||
+		got.LastErrorAt != originalMeta.LastErrorAt ||
+		got.CooldownUntil != originalMeta.CooldownUntil {
+		t.Fatalf("expected key meta unchanged, got %+v want %+v", got, originalMeta)
 	}
 }
 
@@ -446,5 +502,221 @@ func TestDeleteConsumedExportFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(fileB); !os.IsNotExist(err) {
 		t.Fatalf("expected fileB removed, stat err=%v", err)
+	}
+}
+
+func setupCursorProImportTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+
+	common.UsingSQLite = true
+	common.UsingMySQL = false
+	common.UsingPostgreSQL = false
+	common.RedisEnabled = false
+	common.MemoryCacheEnabled = false
+
+	dsn := "file:" + strings.ReplaceAll(t.Name(), "/", "_") + "?mode=memory&cache=shared"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	model.DB = db
+	model.LOG_DB = db
+	if err := db.AutoMigrate(&model.Channel{}); err != nil {
+		t.Fatalf("migrate channel: %v", err)
+	}
+
+	t.Cleanup(func() {
+		sqlDB, err := db.DB()
+		if err == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	return db
+}
+
+func TestImportCursorProExportsConsumedNoChangeDeletesExportAndSetsResult(t *testing.T) {
+	db := setupCursorProImportTestDB(t)
+
+	exportDir := t.TempDir()
+	t.Setenv("CURSORPRO_CODEX_EXPORT_DIR", exportDir)
+
+	controlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tokens/sync":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"changed":false,"forced":false,"reason":"test","result":"noop"}`))
+		case "/v1/tokens/status":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"source_token_count":1,"export_token_count":1}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer controlServer.Close()
+	t.Setenv("CURSORPRO_CONTROL_URL", controlServer.URL)
+
+	item := cursorProExportFile{
+		Provider:   "codex",
+		AccountID:  "acct-consumed",
+		Email:      "consumed@example.com",
+		ExpiresAt:  "2026-05-09T00:00:00Z",
+		Source:     "cursorpro3",
+		ExportedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	item.Raw.AccessToken = "same-at"
+	item.Raw.RefreshToken = "same-rt"
+	item.Raw.IDToken = "same-id"
+
+	key, err := buildCodexOAuthKeyFromCursorProExport(item)
+	if err != nil {
+		t.Fatalf("build key: %v", err)
+	}
+
+	channelID := 901
+	cursorProTriggerStateMap.Delete(channelID)
+	channel := &model.Channel{
+		Id:     channelID,
+		Type:   constant.ChannelTypeCodex,
+		Key:    key,
+		Status: common.ChannelStatusEnabled,
+		Name:   "cursorpro-import-test",
+		ChannelInfo: model.ChannelInfo{
+			MultiKeyMeta: map[int]model.ChannelKeyMeta{
+				0: {
+					State:     model.CodexKeyStateHealthy,
+					AccountID: item.AccountID,
+					Email:     item.Email,
+				},
+			},
+		},
+	}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	exportPath := filepath.Join(exportDir, "same.json")
+	raw, err := common.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal export: %v", err)
+	}
+	if err := os.WriteFile(exportPath, raw, 0o644); err != nil {
+		t.Fatalf("write export: %v", err)
+	}
+
+	result, err := ImportCursorProExports(context.Background(), channelID)
+	if err != nil {
+		t.Fatalf("import exports: %v", err)
+	}
+	if result.ConsumedNoChange != 1 || result.Imported != 0 || result.Updated != 0 || result.Skipped != 0 {
+		t.Fatalf("unexpected import result: %+v", result)
+	}
+	if result.DeletedExports != 1 || result.FailedExportDeletes != 0 {
+		t.Fatalf("unexpected delete counts: %+v", result)
+	}
+	if _, err := os.Stat(exportPath); !os.IsNotExist(err) {
+		t.Fatalf("expected export file deleted, stat err=%v", err)
+	}
+
+	state := cursorProStateForChannel(channelID)
+	if state.LastImportResult != "already_consumed_no_change" {
+		t.Fatalf("unexpected last import result: %s", state.LastImportResult)
+	}
+}
+
+func TestImportCursorProExportsConsumedNoChangeDeleteFailureSetsResult(t *testing.T) {
+	db := setupCursorProImportTestDB(t)
+
+	exportDir := t.TempDir()
+	t.Setenv("CURSORPRO_CODEX_EXPORT_DIR", exportDir)
+
+	controlServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/tokens/sync":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"changed":false,"forced":false,"reason":"test","result":"noop"}`))
+		case "/v1/tokens/status":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"source_token_count":1,"export_token_count":1}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer controlServer.Close()
+	t.Setenv("CURSORPRO_CONTROL_URL", controlServer.URL)
+
+	item := cursorProExportFile{
+		Provider:   "codex",
+		AccountID:  "acct-consumed-fail",
+		Email:      "consumed-fail@example.com",
+		ExpiresAt:  "2026-05-09T00:00:00Z",
+		Source:     "cursorpro3",
+		ExportedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	item.Raw.AccessToken = "same-at-fail"
+	item.Raw.RefreshToken = "same-rt-fail"
+	item.Raw.IDToken = "same-id-fail"
+
+	key, err := buildCodexOAuthKeyFromCursorProExport(item)
+	if err != nil {
+		t.Fatalf("build key: %v", err)
+	}
+
+	channelID := 902
+	cursorProTriggerStateMap.Delete(channelID)
+	channel := &model.Channel{
+		Id:     channelID,
+		Type:   constant.ChannelTypeCodex,
+		Key:    key,
+		Status: common.ChannelStatusEnabled,
+		Name:   "cursorpro-import-test-delete-fail",
+		ChannelInfo: model.ChannelInfo{
+			MultiKeyMeta: map[int]model.ChannelKeyMeta{
+				0: {
+					State:     model.CodexKeyStateHealthy,
+					AccountID: item.AccountID,
+					Email:     item.Email,
+				},
+			},
+		},
+	}
+	if err := db.Create(channel).Error; err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	exportPath := filepath.Join(exportDir, "same-fail.json")
+	raw, err := common.Marshal(item)
+	if err != nil {
+		t.Fatalf("marshal export: %v", err)
+	}
+	if err := os.WriteFile(exportPath, raw, 0o644); err != nil {
+		t.Fatalf("write export: %v", err)
+	}
+
+	if err := os.Chmod(exportDir, 0o555); err != nil {
+		t.Fatalf("chmod export dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(exportDir, 0o755)
+	})
+
+	result, err := ImportCursorProExports(context.Background(), channelID)
+	if err != nil {
+		t.Fatalf("import exports: %v", err)
+	}
+	if result.ConsumedNoChange != 1 || result.Skipped != 0 {
+		t.Fatalf("unexpected import result: %+v", result)
+	}
+	if result.DeletedExports != 0 || result.FailedExportDeletes != 1 {
+		t.Fatalf("unexpected delete counts: %+v", result)
+	}
+	if _, err := os.Stat(exportPath); err != nil {
+		t.Fatalf("expected export file to remain after delete failure, stat err=%v", err)
+	}
+
+	state := cursorProStateForChannel(channelID)
+	if state.LastImportResult != "consumed_no_change_delete_failed" {
+		t.Fatalf("unexpected last import result: %s", state.LastImportResult)
 	}
 }

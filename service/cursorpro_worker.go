@@ -47,6 +47,7 @@ type cursorProExportFile struct {
 type CursorProImportResult struct {
 	Imported            int `json:"imported"`
 	Updated             int `json:"updated"`
+	ConsumedNoChange    int `json:"consumed_no_change"`
 	Skipped             int `json:"skipped"`
 	Total               int `json:"total"`
 	DeletedExports      int `json:"deleted_exports,omitempty"`
@@ -669,12 +670,19 @@ func parseCursorProExportFile(path string) (*cursorProExportFile, error) {
 	return &item, nil
 }
 
+type cursorProUpsertStatus string
+
+const (
+	cursorProUpsertStatusImported         cursorProUpsertStatus = "imported"
+	cursorProUpsertStatusUpdated          cursorProUpsertStatus = "updated"
+	cursorProUpsertStatusConsumedNoChange cursorProUpsertStatus = "consumed_no_change"
+	cursorProUpsertStatusCapacityFull     cursorProUpsertStatus = "capacity_full"
+)
+
 type cursorProUpsertResult struct {
-	Index        int
-	Imported     bool
-	Updated      bool
-	Replaced     bool
-	CapacityFull bool
+	Index    int
+	Status   cursorProUpsertStatus
+	Replaced bool
 }
 
 type cursorProConsumedExport struct {
@@ -729,7 +737,7 @@ func replaceCursorProTokenAtIndex(channel *model.Channel, index int, key string,
 	channel.SetKeyMeta(index, meta)
 	return cursorProUpsertResult{
 		Index:    index,
-		Imported: true,
+		Status:   cursorProUpsertStatusImported,
 		Replaced: true,
 	}
 }
@@ -799,16 +807,20 @@ func upsertCursorProToken(channel *model.Channel, key string, item *cursorProExp
 		if (accountID != "" && strings.TrimSpace(existingOAuth.AccountID) == accountID) ||
 			(email != "" && strings.EqualFold(strings.TrimSpace(existingOAuth.Email), email)) {
 			updated := existingKey != key
+			if !updated {
+				return cursorProUpsertResult{
+					Index:  i,
+					Status: cursorProUpsertStatusConsumedNoChange,
+				}
+			}
 			keys[i] = key
 			channel.Key = strings.Join(keys, "\n")
 			meta := hydrateCodexKeyMeta(key, channel.GetKeyMeta(i))
-			if updated {
-				meta = resetImportedCursorProMeta(meta, item)
-			}
+			meta = resetImportedCursorProMeta(meta, item)
 			channel.SetKeyMeta(i, meta)
 			return cursorProUpsertResult{
-				Index:   i,
-				Updated: updated,
+				Index:  i,
+				Status: cursorProUpsertStatusUpdated,
 			}
 		}
 	}
@@ -819,8 +831,8 @@ func upsertCursorProToken(channel *model.Channel, key string, item *cursorProExp
 
 	if capacity := managedCursorProPoolCapacity(channel); capacity > 0 && len(keys) >= capacity {
 		return cursorProUpsertResult{
-			Index:        -1,
-			CapacityFull: true,
+			Index:  -1,
+			Status: cursorProUpsertStatusCapacityFull,
 		}
 	}
 
@@ -831,8 +843,8 @@ func upsertCursorProToken(channel *model.Channel, key string, item *cursorProExp
 	meta = resetImportedCursorProMeta(meta, item)
 	channel.SetKeyMeta(idx, meta)
 	return cursorProUpsertResult{
-		Index:    idx,
-		Imported: true,
+		Index:  idx,
+		Status: cursorProUpsertStatusImported,
 	}
 }
 
@@ -861,7 +873,9 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 		return nil, fmt.Errorf("channel type is not Codex")
 	}
 
+	common.SysLog(fmt.Sprintf("cursorpro import started: channel_id=%d export_dir=%s", channelID, cursorProCodexExportDir()))
 	_, _ = SyncCursorProTokens(ctx, false, "new_api_import")
+	tokenStatus, _ := readCursorProTokenStatus(ctx)
 
 	exportDir := cursorProCodexExportDir()
 	entries, err := os.ReadDir(exportDir)
@@ -878,10 +892,12 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 	consumedExports := make([]cursorProConsumedExport, 0)
 	replacedCount := 0
 	capacityFullCount := 0
+	candidateNames := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
 			continue
 		}
+		candidateNames = append(candidateNames, entry.Name())
 		result.Total++
 		exportPath := filepath.Join(exportDir, entry.Name())
 		item, err := parseCursorProExportFile(exportPath)
@@ -899,20 +915,24 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 			continue
 		}
 		upsert := upsertCursorProToken(channel, key, item)
-		if upsert.CapacityFull {
+		switch upsert.Status {
+		case cursorProUpsertStatusCapacityFull:
 			capacityFullCount++
 			result.Skipped++
-		} else if upsert.Imported {
+		case cursorProUpsertStatusImported:
 			result.Imported++
 			if upsert.Replaced {
 				replacedCount++
 			}
 			importedIndexes = append(importedIndexes, upsert.Index)
 			consumedExports = append(consumedExports, cursorProConsumedExport{path: exportPath, name: entry.Name()})
-		} else if upsert.Updated {
+		case cursorProUpsertStatusUpdated:
 			result.Updated++
 			consumedExports = append(consumedExports, cursorProConsumedExport{path: exportPath, name: entry.Name()})
-		} else {
+		case cursorProUpsertStatusConsumedNoChange:
+			result.ConsumedNoChange++
+			consumedExports = append(consumedExports, cursorProConsumedExport{path: exportPath, name: entry.Name()})
+		default:
 			result.Skipped++
 		}
 	}
@@ -932,6 +952,20 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 	}
 	ResetProxyClientCache()
 	result.DeletedExports, result.FailedExportDeletes = deleteConsumedExportFiles(consumedExports)
+	common.SysLog(
+		fmt.Sprintf(
+			"cursorpro import completed: channel_id=%d total=%d imported=%d updated=%d consumed_no_change=%d skipped=%d deleted_exports=%d failed_export_deletes=%d candidates=%s",
+			channelID,
+			result.Total,
+			result.Imported,
+			result.Updated,
+			result.ConsumedNoChange,
+			result.Skipped,
+			result.DeletedExports,
+			result.FailedExportDeletes,
+			strings.Join(candidateNames, ","),
+		),
+	)
 	for _, index := range importedIndexes {
 		EnqueueCodexNewKeyProbe(channel.Id, index, "probe_pending")
 	}
@@ -943,15 +977,31 @@ func ImportCursorProExports(ctx context.Context, channelID int) (*CursorProImpor
 		state.LastImportSkipped = result.Skipped
 		state.LastImportTotal = result.Total
 		switch {
+		case result.Total == 0 && tokenStatus != nil && tokenStatus.SourceTokenCount > 0:
+			state.LastImportResult = "stuck_before_import"
 		case replacedCount > 0:
 			state.LastImportResult = "replaced_dead_tokens"
 			recordCursorProSuccessfulRecovery(state, state.LastImportAt, state.LastImportResult)
 		case result.Imported > 0:
-			state.LastImportResult = "imported_to_channel"
+			if result.DeletedExports == 0 && result.FailedExportDeletes > 0 {
+				state.LastImportResult = "stuck_after_import_before_delete"
+			} else {
+				state.LastImportResult = "imported_to_channel"
+			}
 			recordCursorProSuccessfulRecovery(state, state.LastImportAt, state.LastImportResult)
 		case result.Updated > 0:
-			state.LastImportResult = "updated_existing_tokens"
+			if result.DeletedExports == 0 && result.FailedExportDeletes > 0 {
+				state.LastImportResult = "stuck_after_import_before_delete"
+			} else {
+				state.LastImportResult = "updated_existing_tokens"
+			}
 			recordCursorProSuccessfulRecovery(state, state.LastImportAt, state.LastImportResult)
+		case result.ConsumedNoChange > 0:
+			if result.FailedExportDeletes > 0 {
+				state.LastImportResult = "consumed_no_change_delete_failed"
+			} else {
+				state.LastImportResult = "already_consumed_no_change"
+			}
 		case capacityFullCount > 0:
 			state.LastImportResult = "capacity_full_no_replacement"
 		case result.Total > 0:
