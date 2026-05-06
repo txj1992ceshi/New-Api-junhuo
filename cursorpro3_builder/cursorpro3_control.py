@@ -56,6 +56,35 @@ def log(message: str) -> None:
         fh.write(line)
 
 
+def read_pid_file_pid() -> int | None:
+    try:
+        raw = PID_FILE.read_text(encoding="utf-8").strip()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except Exception:
+        return None
+
+
+def pid_is_alive(pid: int | None) -> bool:
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def clear_pid_file_if_owned() -> None:
+    pid_in_file = read_pid_file_pid()
+    if pid_in_file is None or pid_in_file == os.getpid():
+        PID_FILE.unlink(missing_ok=True)
+
+
 class AppState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -81,6 +110,10 @@ class AppState:
             "last_source_to_export_reason": None,
             "sync_lag_seconds": None,
             "last_source_signature": {},
+            "last_modal_detected": False,
+            "last_modal_match_count": 0,
+            "last_modal_matches": [],
+            "last_modal_failure_reason": None,
         }
         self.load()
 
@@ -522,7 +555,7 @@ func attrElement(_ element: AXUIElement, _ attr: String) -> AXUIElement? {
 
 func hasAction(_ element: AXUIElement, _ action: String) -> Bool {
     var value: CFTypeRef?
-    if copyAttr(element, kAXActionsAttribute as String, &value) != .success {
+    if copyAttr(element, "AXActions", &value) != .success {
         return false
     }
     guard let actions = value as? [String] else {
@@ -533,6 +566,10 @@ func hasAction(_ element: AXUIElement, _ action: String) -> Bool {
 
 func attrParent(_ element: AXUIElement) -> AXUIElement? {
     attrElement(element, kAXParentAttribute as String)
+}
+
+func isSameElement(_ lhs: AXUIElement, _ rhs: AXUIElement) -> Bool {
+    CFEqual(lhs, rhs)
 }
 
 func normalizedLabels(_ element: AXUIElement) -> [String] {
@@ -559,7 +596,7 @@ func primaryLabel(_ element: AXUIElement) -> String {
 
 func elementSummary(_ element: AXUIElement) -> [String: Any] {
     let pressTarget = nearestPressableAncestor(element)
-    [
+    return [
         "role": attrString(element, kAXRoleAttribute as String) ?? "",
         "title": attrString(element, kAXTitleAttribute as String) ?? "",
         "description": attrString(element, kAXDescriptionAttribute as String) ?? "",
@@ -623,6 +660,19 @@ func nearestPressableAncestor(_ element: AXUIElement) -> AXUIElement? {
     return nil
 }
 
+func nearestPressableAncestorExcludingSelf(_ element: AXUIElement) -> AXUIElement? {
+    var current = attrParent(element)
+    var depth = 0
+    while let node = current, depth < 12 {
+        if hasAction(node, kAXPressAction as String) {
+            return node
+        }
+        current = attrParent(node)
+        depth += 1
+    }
+    return nil
+}
+
 func preferredButtonLabel(_ title: String, _ desc: String) -> String {
     return firstNonEmpty([title, desc])
 }
@@ -641,6 +691,13 @@ func containsBlockingModal(_ element: AXUIElement) -> Bool {
         }
     }
     return false
+}
+
+func walkNodes(_ root: AXUIElement, visit: (AXUIElement) -> Void) {
+    visit(root)
+    for child in attrElements(root, kAXChildrenAttribute as String) {
+        walkNodes(child, visit: visit)
+    }
 }
 
 func findSystemModalRoots(_ element: AXUIElement) -> [AXUIElement] {
@@ -668,41 +725,120 @@ func isModalTextMatch(_ element: AXUIElement) -> String? {
     return nil
 }
 
-func findModalCandidates(root: AXUIElement) -> [(Int, AXUIElement)] {
-    var weightedMatches: [(Int, AXUIElement)] = []
-    func walk(_ element: AXUIElement) {
-        let role = attrString(element, kAXRoleAttribute as String) ?? ""
-        if modalCandidateRoles.contains(role), let label = isModalTextMatch(element) {
-            if let priority = modalTitles.firstIndex(of: label) {
-                weightedMatches.append((priority, element))
-            }
+func collectPressableDescendants(_ root: AXUIElement, maxDepth: Int) -> [AXUIElement] {
+    var results: [AXUIElement] = []
+    func walk(_ element: AXUIElement, depth: Int) {
+        if hasAction(element, kAXPressAction as String) {
+            results.append(element)
+        }
+        if depth >= maxDepth {
+            return
         }
         for child in attrElements(element, kAXChildrenAttribute as String) {
-            walk(child)
+            walk(child, depth: depth + 1)
         }
     }
-    walk(root)
-    return weightedMatches
+    walk(root, depth: 0)
+    return results
 }
 
-func findModalButtons(window: AXUIElement, webArea: AXUIElement?) -> [AXUIElement] {
+func dedupeElements(_ elements: [AXUIElement]) -> [AXUIElement] {
+    var unique: [AXUIElement] = []
+    for element in elements {
+        if unique.contains(where: { isSameElement($0, element) }) {
+            continue
+        }
+        unique.append(element)
+    }
+    return unique
+}
+
+func filterModalPressTargets(_ elements: [AXUIElement]) -> [AXUIElement] {
+    dedupeElements(elements).filter { element in
+        let label = primaryLabel(element)
+        if label == "一键换号" {
+            return false
+        }
+        let role = attrString(element, kAXRoleAttribute as String) ?? ""
+        return role != "AXWebArea" && role != "AXWindow"
+    }
+}
+
+func resolveModalPressTarget(_ element: AXUIElement) -> (AXUIElement, String)? {
+    if hasAction(element, kAXPressAction as String) {
+        return (element, "self_pressable")
+    }
+    if let ancestor = nearestPressableAncestorExcludingSelf(element) {
+        return (ancestor, "ancestor_pressable")
+    }
+    if let parent = attrParent(element) {
+        let siblingCandidates = filterModalPressTargets(
+            attrElements(parent, kAXChildrenAttribute as String).flatMap { child in
+                collectPressableDescendants(child, maxDepth: 2)
+            }
+        )
+        if siblingCandidates.count == 1 {
+            return (siblingCandidates[0], "sibling_pressable")
+        }
+    }
+    var current = attrParent(element)
+    var depth = 0
+    while let container = current, depth < 4 {
+        let containerCandidates = filterModalPressTargets(collectPressableDescendants(container, maxDepth: 2))
+        if containerCandidates.count == 1 {
+            return (containerCandidates[0], "container_pressable")
+        }
+        current = attrParent(container)
+        depth += 1
+    }
+    return nil
+}
+
+func buildModalCandidate(_ element: AXUIElement, priority: Int, label: String) -> [String: Any] {
+    var candidate: [String: Any] = [
+        "priority": priority,
+        "matched_label": label,
+        "matched_node_summary": elementSummary(element),
+    ]
+    if let (pressTarget, resolutionKind) = resolveModalPressTarget(element) {
+        candidate["resolution_kind"] = resolutionKind
+        candidate["press_target_summary"] = elementSummary(pressTarget)
+        candidate["has_press_target"] = true
+    } else {
+        candidate["resolution_kind"] = "unresolved"
+        candidate["has_press_target"] = false
+    }
+    return candidate
+}
+
+func findModalCandidates(window: AXUIElement, webArea: AXUIElement?) -> [[String: Any]] {
     var searchRoots = findSystemModalRoots(window)
     if let webArea {
-        searchRoots.append(webArea)
+        searchRoots = [webArea] + searchRoots
     }
-    var weightedMatches: [(Int, AXUIElement)] = []
+    var weightedMatches: [(Int, String, AXUIElement)] = []
     for root in searchRoots {
-        weightedMatches.append(contentsOf: findModalCandidates(root: root))
+        walkNodes(root) { element in
+            let role = attrString(element, kAXRoleAttribute as String) ?? ""
+            if !modalCandidateRoles.contains(role) {
+                return
+            }
+            guard let label = isModalTextMatch(element),
+                  let priority = modalTitles.firstIndex(of: label) else {
+                return
+            }
+            weightedMatches.append((priority, label, element))
+        }
     }
     weightedMatches.sort { lhs, rhs in
         if lhs.0 != rhs.0 {
             return lhs.0 < rhs.0
         }
-        let leftSummary = primaryLabel(lhs.1)
-        let rightSummary = primaryLabel(rhs.1)
+        let leftSummary = primaryLabel(lhs.2)
+        let rightSummary = primaryLabel(rhs.2)
         return leftSummary < rightSummary
     }
-    return weightedMatches.map { $0.1 }
+    return weightedMatches.map { buildModalCandidate($0.2, priority: $0.0, label: $0.1) }
 }
 
 func press(_ element: AXUIElement) -> Bool {
@@ -737,8 +873,8 @@ let buttonMatches = webArea.map {
 } ?? []
 let mainButton = buttonMatches.first
 let mainEnabled = mainButton.flatMap { attrBool($0, kAXEnabledAttribute as String) } ?? false
-let modalButtons = findModalButtons(window: window, webArea: webArea)
-let modalDetected = containsBlockingModal(window) || !modalButtons.isEmpty
+let modalCandidates = findModalCandidates(window: window, webArea: webArea)
+let modalDetected = containsBlockingModal(window) || !modalCandidates.isEmpty
 let payloadBase: [String: Any] = [
     "ok": true,
     "frontmost": runningApp.isActive,
@@ -746,8 +882,10 @@ let payloadBase: [String: Any] = [
     "button_found": mainButton != nil,
     "button_enabled": mainEnabled,
     "button": mainButton.map(elementSummary) as Any,
-    "modal_button_count": modalButtons.count,
-    "modal_buttons": modalButtons.map(elementSummary)
+    "modal_button_count": modalCandidates.count,
+    "modal_buttons": modalCandidates.map { ($0["matched_node_summary"] as? [String: Any]) ?? [:] },
+    "modal_match_count": modalCandidates.count,
+    "modal_matches": modalCandidates
 ]
 
 switch action {
@@ -775,28 +913,46 @@ case "press-main":
     print(String(data: data, encoding: .utf8)!)
 case "dismiss-modal":
     var payload = payloadBase
-    if let button = modalButtons.first {
-        if let pressTarget = nearestPressableAncestor(button) {
-            if press(pressTarget) {
-                payload["dismissed"] = true
-                payload["dismissed_button"] = elementSummary(button)
-                if pressTarget as AnyObject !== button as AnyObject {
-                    payload["dismissed_press_target"] = elementSummary(pressTarget)
+    if let candidate = modalCandidates.first {
+        payload["dismiss_candidate"] = candidate
+        if let pressTargetSummary = candidate["press_target_summary"] as? [String: Any],
+           let resolutionKind = candidate["resolution_kind"] as? String,
+           let matchedNodeSummary = candidate["matched_node_summary"] as? [String: Any] {
+            let searchRoot = webArea ?? window
+            var pressTarget: AXUIElement?
+            var matchedNode: AXUIElement?
+            walkNodes(searchRoot) { element in
+                if matchedNode == nil {
+                    let summary = elementSummary(element)
+                    if NSDictionary(dictionary: summary).isEqual(to: matchedNodeSummary) {
+                        matchedNode = element
+                    }
                 }
+                if pressTarget == nil {
+                    let summary = elementSummary(element)
+                    if NSDictionary(dictionary: summary).isEqual(to: pressTargetSummary) {
+                        pressTarget = element
+                    }
+                }
+            }
+            if let resolvedPressTarget = pressTarget, press(resolvedPressTarget) {
+                payload["dismissed"] = true
+                payload["dismissed_button"] = matchedNode.map(elementSummary) ?? matchedNodeSummary
+                payload["dismissed_press_target"] = pressTargetSummary
+                payload["dismissed_resolution_kind"] = resolutionKind
             } else {
                 payload["ok"] = false
                 payload["error_code"] = "modal_blocking_unresolved"
                 payload["error_message"] = "Detected a blocking modal, matched a press target, but AXPress failed."
                 payload["failure_reason"] = "press target found but AXPress failed"
-                payload["dismiss_candidate"] = elementSummary(button)
-                payload["dismiss_press_target"] = elementSummary(pressTarget)
+                payload["dismiss_press_target"] = pressTargetSummary
+                payload["dismiss_resolution_kind"] = resolutionKind
             }
         } else {
             payload["ok"] = false
             payload["error_code"] = "modal_blocking_unresolved"
-            payload["error_message"] = "Detected a blocking modal, matched a modal label, but no pressable ancestor was found."
-            payload["failure_reason"] = "matched modal text but no pressable ancestor"
-            payload["dismiss_candidate"] = elementSummary(button)
+            payload["error_message"] = "Detected a blocking modal, matched modal text, but no press target was resolved."
+            payload["failure_reason"] = "matched modal text but no press target found"
         }
     } else {
         payload["ok"] = false
@@ -862,6 +1018,18 @@ def dismiss_ax_modal() -> dict[str, Any]:
     return run_ax_bridge("dismiss-modal", allow_activate=False)
 
 
+def update_modal_diagnostics(payload: dict[str, Any]) -> None:
+    matches = payload.get("modal_matches")
+    if not isinstance(matches, list):
+        matches = []
+    state.set_state(
+        last_modal_detected=bool(payload.get("modal_detected")),
+        last_modal_match_count=int(payload.get("modal_match_count") or len(matches)),
+        last_modal_matches=matches,
+        last_modal_failure_reason=payload.get("failure_reason"),
+    )
+
+
 def log_modal_failure(stage: str, payload: dict[str, Any]) -> None:
     details = {
         "stage": stage,
@@ -869,6 +1037,8 @@ def log_modal_failure(stage: str, payload: dict[str, Any]) -> None:
         "failure_reason": payload.get("failure_reason"),
         "modal_button_count": payload.get("modal_button_count"),
         "modal_buttons": payload.get("modal_buttons"),
+        "modal_match_count": payload.get("modal_match_count"),
+        "modal_matches": payload.get("modal_matches"),
         "dismiss_candidate": payload.get("dismiss_candidate"),
         "dismiss_press_target": payload.get("dismiss_press_target"),
     }
@@ -878,6 +1048,7 @@ def log_modal_failure(stage: str, payload: dict[str, Any]) -> None:
 def trigger_ax_register_flow() -> dict[str, Any]:
     state.set_state(error_message="ax_button_scan_started")
     inspect = inspect_ax_state(allow_activate=False)
+    update_modal_diagnostics(inspect)
     if not inspect.get("ok", False):
         if inspect.get("error_code") == "ax_permission_missing":
             raise RuntimeError("ax_permission_missing")
@@ -886,6 +1057,7 @@ def trigger_ax_register_flow() -> dict[str, Any]:
         if not restore.get("ok", False):
             raise RuntimeError(restore.get("error_code") or "window_inaccessible")
         inspect = inspect_ax_state(allow_activate=True)
+        update_modal_diagnostics(inspect)
         if not inspect.get("ok", False):
             raise RuntimeError(inspect.get("error_code") or "window_inaccessible")
 
@@ -900,11 +1072,13 @@ def trigger_ax_register_flow() -> dict[str, Any]:
     if inspect.get("modal_detected") or inspect.get("button_found") or inspect.get("button_enabled") is False:
         state.set_state(error_message="ax_web_modal_fallback_started")
         dismiss_result = dismiss_ax_modal()
+        update_modal_diagnostics(dismiss_result)
         if not dismiss_result.get("ok") or not dismiss_result.get("dismissed"):
             log_modal_failure("dismiss_modal", dismiss_result)
             raise RuntimeError(dismiss_result.get("error_code") or "modal_blocking_unresolved")
         time.sleep(0.4)
         inspect = inspect_ax_state(allow_activate=False)
+        update_modal_diagnostics(inspect)
         if inspect.get("button_found") and inspect.get("button_enabled"):
             state.set_state(error_message="ax_button_pressed")
             press_result = press_ax_main_button()
@@ -920,6 +1094,7 @@ def trigger_ax_register_flow() -> dict[str, Any]:
     if not restore.get("ok", False):
         raise RuntimeError(restore.get("error_code") or "window_inaccessible")
     inspect = inspect_ax_state(allow_activate=True)
+    update_modal_diagnostics(inspect)
     if inspect.get("button_found") and inspect.get("button_enabled"):
         state.set_state(error_message="ax_button_pressed")
         press_result = press_ax_main_button()
@@ -1023,10 +1198,18 @@ def start_register_task() -> tuple[dict[str, Any], int]:
 
 
 def health_payload() -> dict[str, Any]:
+    pid_in_file = read_pid_file_pid()
     return {
         "ok": True,
         "app_name": APP_NAME,
+        "app_bundle_id": APP_BUNDLE_ID,
+        "app_bundle_path": str(APP_BUNDLE_PATH),
         "app_running": is_app_running(),
+        "pid": os.getpid(),
+        "pid_file_pid": pid_in_file,
+        "pid_file_alive": pid_is_alive(pid_in_file),
+        "port": PORT,
+        "host": HOST,
         "source_token_dir": str(SOURCE_TOKEN_DIR),
         "source_token_dir_exists": SOURCE_TOKEN_DIR.exists(),
         "export_dir": str(EXPORT_DIR),
@@ -1072,6 +1255,30 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/v1/health":
             self._send(200, health_payload())
             return
+        if self.path == "/v1/diagnostics":
+            status = refresh_sync_state()
+            pid_in_file = read_pid_file_pid()
+            self._send(
+                200,
+                {
+                    "ok": True,
+                    "pid": os.getpid(),
+                    "pid_file_pid": pid_in_file,
+                    "pid_file_alive": pid_is_alive(pid_in_file),
+                    "port": PORT,
+                    "host": HOST,
+                    "last_sync_result": status.get("last_sync_result"),
+                    "source_latest_file": status.get("source_latest_file"),
+                    "source_latest_mtime": status.get("source_latest_mtime"),
+                    "export_latest_file": status.get("export_latest_file"),
+                    "export_latest_mtime": status.get("export_latest_mtime"),
+                    "last_modal_detected": status.get("last_modal_detected"),
+                    "last_modal_match_count": status.get("last_modal_match_count"),
+                    "last_modal_matches": status.get("last_modal_matches"),
+                    "last_modal_failure_reason": status.get("last_modal_failure_reason"),
+                },
+            )
+            return
         if self.path == "/v1/register/status":
             self._send(200, state.snapshot())
             return
@@ -1109,17 +1316,28 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
 
 def handle_signal(signum: int, _frame: Any) -> None:
     log(f"received signal {signum}, exiting")
-    try:
-        PID_FILE.unlink(missing_ok=True)
-    except Exception:
-        pass
+    clear_pid_file_if_owned()
     raise SystemExit(0)
 
 
 def main() -> None:
     STATE_ROOT.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    stale_pid = read_pid_file_pid()
+    if pid_is_alive(stale_pid):
+        raise RuntimeError(f"control server already running with pid={stale_pid}")
+    if stale_pid is not None:
+        PID_FILE.unlink(missing_ok=True)
     PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    log(
+        "startup config: "
+        f"app_name={APP_NAME}, "
+        f"bundle_id={APP_BUNDLE_ID}, "
+        f"app_path={APP_BUNDLE_PATH}, "
+        f"source_dir={SOURCE_TOKEN_DIR}, "
+        f"export_dir={EXPORT_DIR}, "
+        f"listen={HOST}:{PORT}"
+    )
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
     try:
@@ -1132,7 +1350,7 @@ def main() -> None:
     try:
         httpd.serve_forever()
     finally:
-        PID_FILE.unlink(missing_ok=True)
+        clear_pid_file_if_owned()
 
 
 if __name__ == "__main__":
