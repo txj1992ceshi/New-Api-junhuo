@@ -66,7 +66,7 @@ func TestApplyResponsesCompatibilityProfileAntigravity55StatelessTranscript(t *t
 			"previousResponseId": "resp_123",
 			"keep":               "yes",
 		}),
-		Reasoning:  &dto.Reasoning{Effort: "medium"},
+		Reasoning: &dto.Reasoning{Effort: "medium"},
 	}
 
 	result := ApplyResponsesCompatibilityProfile(ctx, relayconstant.RelayModeResponses, constant.ChannelTypeOpenAI, "gpt-5.4", req)
@@ -211,6 +211,41 @@ func TestGenerateTextOtherInfoIncludesResponsesCompatibility(t *testing.T) {
 	adminInfo := other["admin_info"].(map[string]interface{})
 	_, exists := adminInfo["antigravity_responses_mode"]
 	require.False(t, exists)
+}
+
+func TestGenerateTextOtherInfoIncludesExternalPoolAdminInfo(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+	common.SetContextKey(ctx, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+	common.SetContextKey(ctx, constant.ContextKeyChannelName, "cursor-pool-proxy")
+	common.SetContextKey(ctx, constant.ContextKeyChannelBaseUrl, "http://127.0.0.1:3401")
+	common.SetContextKey(ctx, constant.ContextKeyChannelOtherInfo, map[string]any{
+		"cursor_pool_proxy":         true,
+		"cursor_pool_status_path":   "/auth/status",
+		"cursor_pool_accounts_path": "/auth/accounts",
+	})
+
+	now := time.Now()
+	info := &relaycommon.RelayInfo{
+		StartTime:         now,
+		FirstResponseTime: now,
+		ChannelMeta:       &relaycommon.ChannelMeta{},
+		RelayMode:         relayconstant.RelayModeResponses,
+		OriginModelName:   "gpt-5.4",
+	}
+	info.UpstreamModelName = "gpt-5.5"
+	other := GenerateTextOtherInfo(ctx, info, 1, 1, 1, 0, 0, 0, 0)
+	adminInfo := other["admin_info"].(map[string]interface{})
+	require.Equal(t, ExternalPoolKindCursor, adminInfo["external_pool_proxy"])
+	require.Equal(t, "Cursor", adminInfo["external_pool_display_name"])
+	require.Equal(t, "cursor-pool-proxy", adminInfo["external_pool_channel_name"])
+	require.Equal(t, "http://127.0.0.1:3401", adminInfo["external_pool_base_url"])
+	require.Equal(t, "gpt-5.4", adminInfo["external_pool_origin_model"])
+	require.Equal(t, "gpt-5.5", adminInfo["external_pool_upstream_model"])
+	require.Equal(t, "/auth/status", adminInfo["external_pool_status_path"])
+	require.Equal(t, "/auth/accounts", adminInfo["external_pool_accounts_path"])
 }
 
 func mustMarshalCompatRaw(v any) []byte {

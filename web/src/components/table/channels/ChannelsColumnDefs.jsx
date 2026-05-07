@@ -51,7 +51,9 @@ import {
 } from '@douyinfe/semi-icons';
 import { FaRandom } from 'react-icons/fa';
 import {
+  getChannelAdminStatusActionText,
   getChannelAdminStatusKind,
+  getExternalPoolAuthConfig,
   isAdminStatusCapableChannel,
   isCodexStatusCapableChannel,
   isRemoteCodexPoolProxy,
@@ -190,6 +192,22 @@ const renderStatus = (status, record = undefined, t) => {
       t,
     );
   }
+  if (adminStatusKind === 'cursor' && record?.cursor_pool_summary) {
+    return renderMultiKeyStatus(
+      status,
+      record?.cursor_pool_summary?.total_count,
+      record,
+      t,
+    );
+  }
+  if (adminStatusKind === 'kiro' && record?.kiro_pool_summary) {
+    return renderMultiKeyStatus(
+      status,
+      record?.kiro_pool_summary?.total_count,
+      record,
+      t,
+    );
+  }
   if (adminStatusKind === 'windsurf' && record?.windsurf_pool_summary) {
     return renderMultiKeyStatus(
       status,
@@ -219,8 +237,163 @@ const renderStatus = (status, record = undefined, t) => {
 
 const renderMultiKeyStatus = (status, keySize, record, t, enabledKeySize = keySize) => {
   const codexSummary = record?.codex_pool_summary;
+  const cursorSummary = record?.cursor_pool_summary;
+  const kiroSummary = record?.kiro_pool_summary;
   const windsurfSummary = record?.windsurf_pool_summary;
   const statusLabel = getStatusLabel(status, t);
+  const renderExternalPoolStatusTags = (summary) => {
+    if (!summary) return null;
+    const authConfig = getExternalPoolAuthConfig(record);
+    const poolState = String(summary.pool_state || '').trim().toLowerCase();
+    const diagnosis = String(summary.diagnosis || '').trim().toLowerCase();
+    const availability = String(summary.availability || '').trim().toLowerCase();
+    let poolStateColor = 'grey';
+    let poolStateLabel = t('状态未知');
+    switch (poolState) {
+      case 'ready':
+        poolStateColor = 'green';
+        poolStateLabel = t('池可用');
+        break;
+      case 'empty_pool':
+        poolStateColor = 'orange';
+        poolStateLabel = t('空池');
+        break;
+      case 'degraded':
+        poolStateColor = 'yellow';
+        poolStateLabel = t('降级');
+        break;
+      case 'upstream_error':
+        poolStateColor = 'red';
+        poolStateLabel = t('断连');
+        break;
+      default:
+        break;
+    }
+
+    let diagnosisColor = 'grey';
+    let diagnosisLabel = t('待判断');
+    switch (diagnosis) {
+      case 'ready':
+        diagnosisColor = 'green';
+        diagnosisLabel = t('可承接');
+        break;
+      case 'auth_only':
+        diagnosisColor = 'yellow';
+        diagnosisLabel = t('已认证，不可推理');
+        break;
+      case 'unprobed':
+        diagnosisColor = 'grey';
+        diagnosisLabel = t('未探测');
+        break;
+      case 'empty_pool':
+        diagnosisColor = 'orange';
+        diagnosisLabel = t('空池');
+        break;
+      case 'degraded':
+        diagnosisColor = 'yellow';
+        diagnosisLabel = t('部分可用');
+        break;
+      case 'auth_rejected':
+        diagnosisColor = 'red';
+        diagnosisLabel = t('认证失败');
+        break;
+      case 'upstream_path_not_found':
+        diagnosisColor = 'red';
+        diagnosisLabel = t('路径错误');
+        break;
+      case 'upstream_unreachable':
+        diagnosisColor = 'red';
+        diagnosisLabel = t('连接失败');
+        break;
+      case 'upstream_server_error':
+        diagnosisColor = 'red';
+        diagnosisLabel = t('上游 5xx');
+        break;
+      case 'rate_limited':
+        diagnosisColor = 'yellow';
+        diagnosisLabel = t('限流中');
+        break;
+      case 'upstream_error':
+        diagnosisColor = 'red';
+        diagnosisLabel = t('上游异常');
+        break;
+      default:
+        break;
+    }
+
+    let availabilityColor = 'grey';
+    let availabilityLabel = t('未知');
+    switch (availability) {
+      case 'available':
+        availabilityColor = 'green';
+        availabilityLabel = t('可用');
+        break;
+      case 'degraded':
+        availabilityColor = 'yellow';
+        availabilityLabel = t('降级');
+        break;
+      case 'unavailable':
+        availabilityColor = 'red';
+        availabilityLabel = t('不可用');
+        break;
+      case 'config_invalid':
+        availabilityColor = 'red';
+        availabilityLabel = t('配置缺失');
+        break;
+      default:
+        break;
+    }
+
+    const authCapable = summary.auth_capable === true;
+    const inferenceCapable = summary.inference_capable === true;
+    const inferenceProbed = summary.inference_probed === true;
+    const capabilityLabel = authCapable
+      ? inferenceCapable
+        ? t('已认证，可推理')
+        : inferenceProbed
+          ? t('已认证，不可推理')
+          : t('已认证，未探测')
+      : t('未认证');
+    const capabilityColor = authCapable ? (inferenceCapable ? 'green' : inferenceProbed ? 'orange' : 'grey') : 'grey';
+
+    const content = (
+      <Space spacing={4}>
+        <Tag color={getStatusColor(status)} shape='circle'>
+          {statusLabel} · {t('可用')} {summary.available_count ?? 0} · {t('库存')}{' '}
+          {summary.total_count || keySize || 0}
+        </Tag>
+        <Tag color={capabilityColor} type='light' shape='circle'>
+          {capabilityLabel}
+        </Tag>
+        <Tag color={availabilityColor} type='light' shape='circle'>
+          {availabilityLabel}
+        </Tag>
+        <Tag color={diagnosisColor} type='light' shape='circle'>
+          {diagnosisLabel}
+        </Tag>
+        <Tag color={poolStateColor} type='light' shape='circle'>
+          {poolStateLabel}
+        </Tag>
+        <Tag
+          color={authConfig.configured ? 'blue' : 'grey'}
+          type='light'
+          shape='circle'
+        >
+          {authConfig.configured ? t('已配授权') : t('待配授权')}
+        </Tag>
+      </Space>
+    );
+
+    const tips = [];
+    if (summary.upstream_error) tips.push(`${t('上游错误')}: ${summary.upstream_error}`);
+    if (summary.inference_error) tips.push(`${t('推理错误')}: ${summary.inference_error}`);
+    if (tips.length === 0) return content;
+    return (
+      <Tooltip content={tips.join('\n')} position='top'>
+        <span>{content}</span>
+      </Tooltip>
+    );
+  };
 
   if (isCodexStatusCapableChannel(record) && codexSummary) {
     const availableCount = codexSummary.available_count ?? 0;
@@ -233,12 +406,15 @@ const renderMultiKeyStatus = (status, keySize, record, t, enabledKeySize = keySi
   }
 
   if (getChannelAdminStatusKind(record) === 'windsurf' && windsurfSummary) {
-    return (
-      <Tag color={getStatusColor(status)} shape='circle'>
-        {statusLabel} · {t('可用')} {windsurfSummary.available_count} · {t('库存')}{' '}
-        {windsurfSummary.total_count || keySize}
-      </Tag>
-    );
+    return renderExternalPoolStatusTags(windsurfSummary);
+  }
+
+  if (getChannelAdminStatusKind(record) === 'cursor' && cursorSummary) {
+    return renderExternalPoolStatusTags(cursorSummary);
+  }
+
+  if (getChannelAdminStatusKind(record) === 'kiro' && kiroSummary) {
+    return renderExternalPoolStatusTags(kiroSummary);
   }
 
   return (
@@ -560,6 +736,7 @@ export const getChannelsColumns = ({
       render: (text, record, index) => {
         const adminStatusKind = getChannelAdminStatusKind(record);
         const adminStatusCapable = isAdminStatusCapableChannel(record);
+        const adminStatusActionText = getChannelAdminStatusActionText(record, t);
         if (record.children === undefined) {
           return (
             <div>
@@ -572,9 +749,7 @@ export const getChannelsColumns = ({
                 <Tooltip
                   content={
                     adminStatusCapable
-                      ? adminStatusKind === 'windsurf'
-                        ? t('查看 Windsurf 帐号信息与池状态')
-                        : t('查看 Codex 帐号信息与用量')
+                      ? adminStatusActionText?.tooltip || t('查看渠道状态')
                       : t('剩余额度') +
                         ': ' +
                         renderQuotaWithAmount(record.balance) +
@@ -589,7 +764,7 @@ export const getChannelsColumns = ({
                     onClick={() => updateChannelBalance(record)}
                   >
                     {adminStatusCapable
-                      ? t('帐号信息')
+                      ? adminStatusActionText?.label || t('状态')
                       : renderQuotaWithAmount(record.balance)}
                   </Tag>
                 </Tooltip>

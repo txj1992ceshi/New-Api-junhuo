@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import React from 'react';
-import { Banner } from '@douyinfe/semi-ui';
+import { Banner, Button, Space, Tag } from '@douyinfe/semi-ui';
 import { IconAlertTriangle } from '@douyinfe/semi-icons';
 import CardPro from '../../common/ui/CardPro';
 import ChannelsTable from './ChannelsTable';
@@ -39,6 +39,30 @@ import { createCardProPagination } from '../../../helpers/utils';
 const ChannelsPage = () => {
   const channelsData = useChannelsData();
   const isMobile = useIsMobile();
+  const quickFilter = channelsData.externalPoolQuickFilter;
+
+  const quickFilterTags = [
+    { key: 'available', label: channelsData.t('可用'), count: channelsData.externalPoolPageStats.available, color: 'green' },
+    { key: 'degraded', label: channelsData.t('降级'), count: channelsData.externalPoolPageStats.degraded, color: 'yellow' },
+    { key: 'unavailable', label: channelsData.t('不可用'), count: channelsData.externalPoolPageStats.unavailable, color: 'red' },
+    { key: 'auth_rejected', label: channelsData.t('认证失败'), count: channelsData.externalPoolPageStats.authRejected, color: 'red' },
+    { key: 'empty_pool', label: channelsData.t('空池'), count: channelsData.externalPoolPageStats.emptyPool, color: 'orange' },
+    { key: 'upstream_unreachable', label: channelsData.t('连接失败'), count: channelsData.externalPoolPageStats.upstreamUnreachable, color: 'red' },
+    { key: 'upstream_path_not_found', label: channelsData.t('路径错误'), count: channelsData.externalPoolPageStats.upstreamPathNotFound, color: 'red' },
+    { key: 'rate_limited', label: channelsData.t('限流'), count: channelsData.externalPoolPageStats.rateLimited, color: 'yellow' },
+  ];
+
+  const handleQuickFilterTagClick = (nextFilter) => {
+    const target = quickFilter === nextFilter ? 'all' : nextFilter;
+    localStorage.setItem('channel-external-pool-quick-filter', target);
+    channelsData.setExternalPoolQuickFilter(target);
+  };
+
+  const applySuggestedFilter = () => {
+    const target = channelsData.externalPoolNextAction.filter || 'all';
+    localStorage.setItem('channel-external-pool-quick-filter', target);
+    channelsData.setExternalPoolQuickFilter(target);
+  };
 
   return (
     <>
@@ -92,6 +116,73 @@ const ChannelsPage = () => {
           )}
           style={{ marginBottom: 12 }}
         />
+      ) : null}
+      {channelsData.externalPoolQuickFilter !== 'all' ? (
+        <Banner
+          type='info'
+          closeIcon={null}
+          description={channelsData.t(
+            '当前启用了“当前页池快筛”：仅筛选本页已加载渠道，不改变后端分页总数。当前页命中 {{count}} 条。',
+            { count: channelsData.filteredChannelCount },
+          )}
+          style={{ marginBottom: 12 }}
+        />
+      ) : null}
+      {channelsData.externalPoolPageStats.total > 0 ? (
+        <div
+          className='mb-3 flex flex-wrap items-center gap-2'
+          style={{ minHeight: 32 }}
+        >
+          <Tag
+            color='grey'
+            shape='circle'
+            className='cursor-pointer select-none'
+            type={quickFilter === 'all' ? 'solid' : 'light'}
+            onClick={() => handleQuickFilterTagClick('all')}
+          >
+            {channelsData.t('当前页外部池')} {channelsData.externalPoolPageStats.total}
+          </Tag>
+          <Space wrap spacing={6}>
+            {quickFilterTags.map((item) => (
+              <Tag
+                key={item.key}
+                color={item.color}
+                type={quickFilter === item.key ? 'solid' : 'light'}
+                shape='circle'
+                className='cursor-pointer select-none'
+                onClick={() => handleQuickFilterTagClick(item.key)}
+              >
+                {item.label} {item.count}
+              </Tag>
+            ))}
+          </Space>
+        </div>
+      ) : null}
+      {channelsData.externalPoolPageStats.total > 0 ? (
+        <div style={{ marginBottom: 12 }}>
+          <Banner
+            type='info'
+            closeIcon={null}
+            description={`${channelsData.externalPoolNextAction.title}：${channelsData.externalPoolNextAction.description}`}
+          />
+          <div className='mt-2 flex flex-wrap gap-2'>
+            <Button
+              size='small'
+              type='primary'
+              theme='solid'
+              onClick={applySuggestedFilter}
+            >
+              {channelsData.t('按建议筛选')}
+            </Button>
+            <Button
+              size='small'
+              theme='outline'
+              onClick={() => handleQuickFilterTagClick('all')}
+            >
+              {channelsData.t('清空快筛')}
+            </Button>
+          </div>
+        </div>
       ) : null}
       <CardPro
         type='type3'

@@ -49,6 +49,10 @@ const ChannelsActions = ({
   setEnableTagMode,
   statusFilter,
   setStatusFilter,
+  externalPoolIssueFirst,
+  setExternalPoolIssueFirst,
+  externalPoolQuickFilter,
+  setExternalPoolQuickFilter,
   getFormValues,
   loadChannels,
   searchChannels,
@@ -318,6 +322,72 @@ const ChannelsActions = ({
               <Select.Option value='all'>{t('全部')}</Select.Option>
               <Select.Option value='enabled'>{t('已启用')}</Select.Option>
               <Select.Option value='disabled'>{t('已禁用')}</Select.Option>
+            </Select>
+          </div>
+
+          <div className='flex items-center justify-between w-full md:w-auto'>
+            <Typography.Text strong className='mr-2'>
+              {t('外部池异常前置')}
+            </Typography.Text>
+            <Switch
+              size='small'
+              checked={externalPoolIssueFirst}
+              onChange={(v) => {
+                localStorage.setItem('channel-external-pool-issue-first', v + '');
+                setExternalPoolIssueFirst(v);
+                const { searchKeyword, searchGroup, searchModel } =
+                  getFormValues();
+                if (
+                  searchKeyword === '' &&
+                  searchGroup === '' &&
+                  searchModel === ''
+                ) {
+                  loadChannels(
+                    activePage,
+                    pageSize,
+                    idSort,
+                    enableTagMode,
+                    activeTypeKey,
+                    statusFilter,
+                    v,
+                  );
+                } else {
+                  searchChannels(
+                    enableTagMode,
+                    activeTypeKey,
+                    statusFilter,
+                    activePage,
+                    pageSize,
+                    idSort,
+                    v,
+                  );
+                }
+              }}
+            />
+          </div>
+
+          <div className='flex items-center justify-between w-full md:w-auto'>
+            <Typography.Text strong className='mr-2'>
+              {t('当前页池快筛')}
+            </Typography.Text>
+            <Select
+              size='small'
+              value={externalPoolQuickFilter}
+              onChange={(v) => {
+                localStorage.setItem('channel-external-pool-quick-filter', v);
+                setExternalPoolQuickFilter(v);
+              }}
+              style={{ minWidth: 150 }}
+            >
+              <Select.Option value='all'>{t('全部')}</Select.Option>
+              <Select.Option value='available'>{t('仅看池可用')}</Select.Option>
+              <Select.Option value='unavailable'>{t('仅看不可用')}</Select.Option>
+              <Select.Option value='degraded'>{t('仅看降级')}</Select.Option>
+              <Select.Option value='auth_rejected'>{t('仅看认证失败')}</Select.Option>
+              <Select.Option value='empty_pool'>{t('仅看空池')}</Select.Option>
+              <Select.Option value='upstream_unreachable'>{t('仅看连接失败')}</Select.Option>
+              <Select.Option value='upstream_path_not_found'>{t('仅看路径错误')}</Select.Option>
+              <Select.Option value='rate_limited'>{t('仅看限流')}</Select.Option>
             </Select>
           </div>
         </div>

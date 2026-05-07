@@ -124,6 +124,17 @@ func normalizeChannelTestEndpoint(channel *model.Channel, modelName, endpointTyp
 	if channel != nil && channel.Type == constant.ChannelTypeCodex {
 		return string(constant.EndpointTypeOpenAIResponse)
 	}
+	if channel != nil {
+		if _, ok := service.ResolveCursorPoolProxy(channel); ok {
+			return string(constant.EndpointTypeOpenAIResponse)
+		}
+		if _, ok := service.ResolveWindsurfPoolProxy(channel); ok {
+			return string(constant.EndpointTypeOpenAIResponse)
+		}
+		if _, ok := service.ResolveKiroPoolProxy(channel); ok {
+			return string(constant.EndpointTypeOpenAIResponse)
+		}
+	}
 	return normalized
 }
 

@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -240,6 +241,18 @@ func getUpstreamModelUpdateMinCheckIntervalSeconds() int64 {
 }
 
 func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
+	if channel != nil {
+		if _, ok := service.ResolveCursorPoolProxy(channel); ok {
+			return fetchExternalPoolUpstreamModelIDs(channel, service.ExternalPoolKindCursor)
+		}
+		if _, ok := service.ResolveWindsurfPoolProxy(channel); ok {
+			return fetchExternalPoolUpstreamModelIDs(channel, service.ExternalPoolKindWindsurf)
+		}
+		if _, ok := service.ResolveKiroPoolProxy(channel); ok {
+			return fetchExternalPoolUpstreamModelIDs(channel, service.ExternalPoolKindKiro)
+		}
+	}
+
 	baseURL := constant.ChannelBaseURLs[channel.Type]
 	if channel.GetBaseURL() != "" {
 		baseURL = channel.GetBaseURL()
@@ -324,6 +337,31 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 	})
 
 	return normalizeModelNames(ids), nil
+}
+
+func fetchExternalPoolUpstreamModelIDs(channel *model.Channel, kind string) ([]string, error) {
+	if channel == nil {
+		return nil, fmt.Errorf("channel is nil")
+	}
+	var (
+		status *service.ExternalPoolStatus
+		err    error
+	)
+	switch kind {
+	case service.ExternalPoolKindCursor:
+		status, err = service.FetchCursorPoolStatus(context.Background(), channel)
+	case service.ExternalPoolKindKiro:
+		status, err = service.FetchKiroPoolStatus(context.Background(), channel)
+	default:
+		status, err = service.FetchWindsurfPoolStatus(context.Background(), channel)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if status == nil || len(status.Models) == 0 {
+		return nil, fmt.Errorf("%s pool status does not expose models", strings.ToLower(kind))
+	}
+	return normalizeModelNames(status.Models), nil
 }
 
 func updateChannelUpstreamModelSettings(channel *model.Channel, settings dto.ChannelOtherSettings, updateModels bool) error {

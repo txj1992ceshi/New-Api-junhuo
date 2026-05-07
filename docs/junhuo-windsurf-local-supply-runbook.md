@@ -58,6 +58,7 @@ CLOUDMAIL_ADMIN_EMAIL=
 CLOUDMAIL_ADMIN_PASSWORD=
 CLOUDMAIL_DOMAIN=
 WINDSURF_POOL_API_BASE_URL=http://127.0.0.1:3003
+WINDSURF_POOL_API_KEY=<WindsurfAPI API_KEY>
 ```
 
 ## 4. 手动补池验证
@@ -79,7 +80,7 @@ python windsurf_register.py --count 3 --output-dir auth_output
 验收点：
 
 - `auth_output/<email>/windsurf_auth_session.json` 已生成
-- 注册脚本成功调用 `POST /auth/login`
+- 注册脚本成功携带 `Authorization: Bearer <WINDSURF_POOL_API_KEY>` 调用 `POST /auth/login`
 - 服务器 `WindsurfAPI` 账号池出现新账号
 
 ## 5. `New-API` 灰度接入

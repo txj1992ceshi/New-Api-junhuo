@@ -66,7 +66,8 @@ import OllamaModelModal from './OllamaModelModal';
 import CodexOAuthModal from './CodexOAuthModal';
 import AntigravityOAuthModal from './AntigravityOAuthModal';
 import { openCodexUsageModal } from './CodexUsageModal';
-import { openWindsurfPoolModal } from './WindsurfPoolModal';
+import { openExternalPoolAuthModal } from './ExternalPoolAuthModal';
+import { openExternalPoolModal } from './WindsurfPoolModal';
 import ParamOverrideEditorModal from './ParamOverrideEditorModal';
 import JSONEditor from '../../../common/ui/JSONEditor';
 import SecureVerificationModal from '../../../common/modals/SecureVerificationModal';
@@ -80,7 +81,11 @@ import {
   collectNewDisallowedStatusCodeRedirects,
 } from './statusCodeRiskGuard';
 import {
+  getChannelAdminStatusActionText,
   getChannelAdminStatusKind,
+  getExternalPoolAuthConfig,
+  isCursorPoolProxy,
+  isKiroPoolProxy,
   isRemoteCodexPoolProxy,
   isWindsurfPoolProxy,
 } from '../channelCodexProxy';
@@ -98,6 +103,149 @@ import {
 } from '@douyinfe/semi-icons';
 
 const { Text, Title } = Typography;
+const poolProxyKinds = ['cursor', 'kiro', 'windsurf'];
+
+const poolProxyToggleFields = poolProxyKinds.map((kind) => `${kind}_pool_proxy`);
+const poolProxyDefaultValues = {
+  status_path: '/auth/status',
+  accounts_path: '/auth/accounts',
+  dashboard_path: '/dashboard',
+  auth_start_path: '/auth/start',
+  auth_complete_path: '/auth/complete',
+  auth_strategy: 'local_state_direct',
+  auth_header: 'Authorization',
+  auth_scheme: 'Bearer',
+  inference_mode: 'responses',
+};
+
+const applyPoolProxyOtherInfo = (baseOtherInfo, localInputs) => {
+  const nextOtherInfo = {
+    ...(baseOtherInfo && typeof baseOtherInfo === 'object' ? baseOtherInfo : {}),
+  };
+
+  poolProxyKinds.forEach((kind) => {
+    const enabled = localInputs?.[`${kind}_pool_proxy`] === true;
+    const keys = [
+      `${kind}_pool_proxy`,
+      `${kind}_pool_base_url`,
+      `${kind}_pool_api_key`,
+      `${kind}_pool_status_path`,
+      `${kind}_pool_accounts_path`,
+      `${kind}_pool_dashboard_path`,
+      `${kind}_pool_authorize_url`,
+      `${kind}_pool_authorize_hint`,
+      `${kind}_pool_auth_start_path`,
+      `${kind}_pool_auth_complete_path`,
+      `${kind}_pool_auth_strategy`,
+      `${kind}_pool_auth_header`,
+      `${kind}_pool_auth_scheme`,
+      `${kind}_pool_tunnel_hint`,
+      `${kind}_pool_inference_mode`,
+      `${kind}_pool_probe_inference`,
+    ];
+    if (enabled) {
+      nextOtherInfo[`${kind}_pool_proxy`] = true;
+      keys.slice(1).forEach((key) => {
+        const value = localInputs?.[key];
+        if (typeof value === 'boolean') {
+          if (value) {
+            nextOtherInfo[key] = true;
+          } else {
+            delete nextOtherInfo[key];
+          }
+          return;
+        }
+        if (typeof value === 'string' && value.trim() !== '') {
+          nextOtherInfo[key] = value.trim();
+        } else {
+          delete nextOtherInfo[key];
+        }
+      });
+      return;
+    }
+    keys.forEach((key) => delete nextOtherInfo[key]);
+  });
+
+  return nextOtherInfo;
+};
+
+const applyPoolProxyDefaults = (kind, baseInputs) => {
+  const nextInputs = { ...baseInputs };
+  Object.entries(poolProxyDefaultValues).forEach(([suffix, defaultValue]) => {
+    if (suffix === 'auth_strategy' && kind !== 'cursor') {
+      return;
+    }
+    const field = `${kind}_pool_${suffix}`;
+    const currentValue = nextInputs?.[field];
+    if (typeof currentValue !== 'string' || currentValue.trim() === '') {
+      nextInputs[field] = defaultValue;
+    }
+  });
+  return nextInputs;
+};
+
+const ExternalPoolEditActions = ({
+  hint,
+  primaryLabel,
+  secondaryLabel,
+  statusLabel,
+  dashboardLabel,
+  onAuthorize,
+  onSecondary,
+  onStatus,
+  onDashboard,
+  disabled,
+}) => (
+  <div className='mb-4'>
+    <Space wrap spacing='tight'>
+      <Button
+        type='primary'
+        theme='outline'
+        onClick={onAuthorize}
+        disabled={disabled}
+      >
+        {primaryLabel}
+      </Button>
+      {secondaryLabel ? (
+        <Button
+          type='primary'
+          theme='outline'
+          onClick={onSecondary}
+          disabled={disabled}
+        >
+          {secondaryLabel}
+        </Button>
+      ) : null}
+      <Button
+        type='primary'
+        theme='outline'
+        onClick={onStatus}
+        disabled={disabled}
+      >
+        {statusLabel}
+      </Button>
+      <Button
+        type='primary'
+        theme='outline'
+        onClick={onDashboard}
+        disabled={disabled}
+      >
+        {dashboardLabel}
+      </Button>
+    </Space>
+    <div className='mt-2'>
+      <Text type='tertiary' size='small'>
+        {hint}
+      </Text>
+    </div>
+  </div>
+);
+
+const EXTERNAL_POOL_INFERENCE_OPTIONS = [
+  { label: 'responses', value: 'responses' },
+  { label: 'chat_completions', value: 'chat_completions' },
+  { label: 'dual', value: 'dual' },
+];
 
 const MODEL_MAPPING_EXAMPLE = {
   'gpt-3.5-turbo': 'gpt-3.5-turbo-0125',
@@ -218,7 +366,42 @@ const EditChannelModal = (props) => {
     weight: 0,
     tag: '',
     multi_key_mode: 'random',
+    cursor_pool_proxy: false,
+    cursor_pool_status_path: '',
+    cursor_pool_accounts_path: '',
+    cursor_pool_dashboard_path: '',
+    cursor_pool_authorize_url: '',
+    cursor_pool_authorize_hint: '',
+    cursor_pool_auth_start_path: '',
+    cursor_pool_auth_complete_path: '',
+    cursor_pool_auth_strategy: '',
+    cursor_pool_auth_header: '',
+    cursor_pool_auth_scheme: '',
+    cursor_pool_tunnel_hint: '',
+    kiro_pool_proxy: false,
+    kiro_pool_status_path: '',
+    kiro_pool_accounts_path: '',
+    kiro_pool_dashboard_path: '',
+    kiro_pool_authorize_url: '',
+    kiro_pool_authorize_hint: '',
+    kiro_pool_auth_start_path: '',
+    kiro_pool_auth_complete_path: '',
+    kiro_pool_auth_strategy: '',
+    kiro_pool_auth_header: '',
+    kiro_pool_auth_scheme: '',
+    kiro_pool_tunnel_hint: '',
     windsurf_pool_proxy: false,
+    windsurf_pool_status_path: '',
+    windsurf_pool_accounts_path: '',
+    windsurf_pool_dashboard_path: '',
+    windsurf_pool_authorize_url: '',
+    windsurf_pool_authorize_hint: '',
+    windsurf_pool_auth_start_path: '',
+    windsurf_pool_auth_complete_path: '',
+    windsurf_pool_auth_strategy: '',
+    windsurf_pool_auth_header: '',
+    windsurf_pool_auth_scheme: '',
+    windsurf_pool_tunnel_hint: '',
     // 渠道额外设置的默认值
     force_format: false,
     thinking_to_content: false,
@@ -629,6 +812,42 @@ const EditChannelModal = (props) => {
     }
     if (name === 'type') {
       value = normalizeChannelType(value);
+    }
+    if (poolProxyToggleFields.includes(name) && value === true) {
+      const nextValues = { [name]: true };
+      poolProxyToggleFields.forEach((field) => {
+        if (field !== name) {
+          nextValues[field] = false;
+        }
+      });
+      const nextKind = name.replace(/_pool_proxy$/, '');
+      const nextInputs = applyPoolProxyDefaults(nextKind, {
+        ...inputs,
+        ...nextValues,
+      });
+      if (formApiRef.current) {
+        Object.entries(nextInputs).forEach(([field, fieldValue]) => {
+          if (
+            field === name ||
+            poolProxyToggleFields.includes(field) ||
+            field.startsWith(`${nextKind}_pool_`)
+          ) {
+            formApiRef.current.setValue(field, fieldValue);
+          }
+        });
+      }
+      setInputs(nextInputs);
+      return;
+    }
+    if (poolProxyToggleFields.includes(name) && value === false) {
+      if (formApiRef.current) {
+        formApiRef.current.setValue(name, false);
+      }
+      setInputs((prev) => ({
+        ...prev,
+        [name]: false,
+      }));
+      return;
     }
     if (formApiRef.current) {
       formApiRef.current.setValue(name, value);
@@ -1076,8 +1295,49 @@ const EditChannelModal = (props) => {
           // ignore parse error
         }
       }
+      data.cursor_pool_proxy = parsedOtherInfo?.cursor_pool_proxy === true;
+      data.cursor_pool_status_path = parsedOtherInfo?.cursor_pool_status_path || '';
+      data.cursor_pool_accounts_path = parsedOtherInfo?.cursor_pool_accounts_path || '';
+      data.cursor_pool_dashboard_path = parsedOtherInfo?.cursor_pool_dashboard_path || '';
+      data.cursor_pool_authorize_url = parsedOtherInfo?.cursor_pool_authorize_url || '';
+      data.cursor_pool_authorize_hint = parsedOtherInfo?.cursor_pool_authorize_hint || '';
+      data.cursor_pool_auth_start_path = parsedOtherInfo?.cursor_pool_auth_start_path || '';
+      data.cursor_pool_auth_complete_path = parsedOtherInfo?.cursor_pool_auth_complete_path || '';
+      data.cursor_pool_auth_strategy = parsedOtherInfo?.cursor_pool_auth_strategy || '';
+      data.cursor_pool_auth_header = parsedOtherInfo?.cursor_pool_auth_header || '';
+      data.cursor_pool_auth_scheme = parsedOtherInfo?.cursor_pool_auth_scheme || '';
+      data.cursor_pool_tunnel_hint = parsedOtherInfo?.cursor_pool_tunnel_hint || '';
+      data.cursor_pool_inference_mode = parsedOtherInfo?.cursor_pool_inference_mode || '';
+      data.cursor_pool_probe_inference = parsedOtherInfo?.cursor_pool_probe_inference === true;
+      data.kiro_pool_proxy = parsedOtherInfo?.kiro_pool_proxy === true;
+      data.kiro_pool_status_path = parsedOtherInfo?.kiro_pool_status_path || '';
+      data.kiro_pool_accounts_path = parsedOtherInfo?.kiro_pool_accounts_path || '';
+      data.kiro_pool_dashboard_path = parsedOtherInfo?.kiro_pool_dashboard_path || '';
+      data.kiro_pool_authorize_url = parsedOtherInfo?.kiro_pool_authorize_url || '';
+      data.kiro_pool_authorize_hint = parsedOtherInfo?.kiro_pool_authorize_hint || '';
+      data.kiro_pool_auth_start_path = parsedOtherInfo?.kiro_pool_auth_start_path || '';
+      data.kiro_pool_auth_complete_path = parsedOtherInfo?.kiro_pool_auth_complete_path || '';
+      data.kiro_pool_auth_strategy = parsedOtherInfo?.kiro_pool_auth_strategy || '';
+      data.kiro_pool_auth_header = parsedOtherInfo?.kiro_pool_auth_header || '';
+      data.kiro_pool_auth_scheme = parsedOtherInfo?.kiro_pool_auth_scheme || '';
+      data.kiro_pool_tunnel_hint = parsedOtherInfo?.kiro_pool_tunnel_hint || '';
+      data.kiro_pool_inference_mode = parsedOtherInfo?.kiro_pool_inference_mode || '';
+      data.kiro_pool_probe_inference = parsedOtherInfo?.kiro_pool_probe_inference === true;
       data.windsurf_pool_proxy =
         parsedOtherInfo?.windsurf_pool_proxy === true;
+      data.windsurf_pool_status_path = parsedOtherInfo?.windsurf_pool_status_path || '';
+      data.windsurf_pool_accounts_path = parsedOtherInfo?.windsurf_pool_accounts_path || '';
+      data.windsurf_pool_dashboard_path = parsedOtherInfo?.windsurf_pool_dashboard_path || '';
+      data.windsurf_pool_authorize_url = parsedOtherInfo?.windsurf_pool_authorize_url || '';
+      data.windsurf_pool_authorize_hint = parsedOtherInfo?.windsurf_pool_authorize_hint || '';
+      data.windsurf_pool_auth_start_path = parsedOtherInfo?.windsurf_pool_auth_start_path || '';
+      data.windsurf_pool_auth_complete_path = parsedOtherInfo?.windsurf_pool_auth_complete_path || '';
+      data.windsurf_pool_auth_strategy = parsedOtherInfo?.windsurf_pool_auth_strategy || '';
+      data.windsurf_pool_auth_header = parsedOtherInfo?.windsurf_pool_auth_header || '';
+      data.windsurf_pool_auth_scheme = parsedOtherInfo?.windsurf_pool_auth_scheme || '';
+      data.windsurf_pool_tunnel_hint = parsedOtherInfo?.windsurf_pool_tunnel_hint || '';
+      data.windsurf_pool_inference_mode = parsedOtherInfo?.windsurf_pool_inference_mode || '';
+      data.windsurf_pool_probe_inference = parsedOtherInfo?.windsurf_pool_probe_inference === true;
       const managedByIonet = !!parsedIonet;
       setIsIonetChannel(managedByIonet);
       setIonetMetadata(parsedIonet);
@@ -1379,10 +1639,14 @@ const EditChannelModal = (props) => {
     }
   };
 
-  const handleOpenCodexStatus = () => {
+  const buildEditableAdminRecord = () => {
     if (!isEdit || !channelId) return;
     let otherInfo = inputs.other_info;
-    if (inputs.windsurf_pool_proxy === true) {
+    if (
+      inputs.cursor_pool_proxy === true ||
+      inputs.kiro_pool_proxy === true ||
+      inputs.windsurf_pool_proxy === true
+    ) {
       let parsedOtherInfo = {};
       if (typeof inputs.other_info === 'string' && inputs.other_info.trim() !== '') {
         try {
@@ -1391,18 +1655,91 @@ const EditChannelModal = (props) => {
           parsedOtherInfo = {};
         }
       }
-      otherInfo = JSON.stringify({
-        ...parsedOtherInfo,
-        windsurf_pool_proxy: true,
-      });
+      otherInfo = JSON.stringify(applyPoolProxyOtherInfo(parsedOtherInfo, inputs));
     }
-    const record = {
+    return {
       id: channelId,
       name: inputs.name,
       type: inputs.type,
       base_url: inputs.base_url,
       other_info: otherInfo,
     };
+  };
+
+  const handleOpenExternalPoolAuth = () => {
+    const record = buildEditableAdminRecord();
+    if (!record) return;
+    openExternalPoolAuthModal({
+      record,
+      onCompleted: () => {
+        handleOpenCodexStatus();
+      },
+    });
+  };
+
+  const handleOpenCursorOAuthAdapterAuth = () => {
+    const record = buildEditableAdminRecord();
+    if (!record) return;
+    openExternalPoolAuthModal({
+      record,
+      forcedAuthStrategy: 'oauth_callback',
+      modeLabel: t('Cursor 授权登录'),
+      primaryActionLabel: t('打开授权页面'),
+      completeActionLabel: t('提交授权结果'),
+      onCompleted: () => {
+        handleOpenCodexStatus();
+      },
+    });
+  };
+
+  const handleOpenCursorLocalStateImport = () => {
+    const record = buildEditableAdminRecord();
+    if (!record) return;
+    openExternalPoolAuthModal({
+      record,
+      forcedAuthStrategy: 'local_state_direct',
+      modeLabel: t('Cursor 读取登录态'),
+      primaryActionLabel: t('开始读取登录态'),
+      completeActionLabel: t('确认读取登录态'),
+      onCompleted: () => {
+        handleOpenCodexStatus();
+      },
+    });
+  };
+
+  const handleOpenWindsurfLocalStateImport = () => {
+    const record = buildEditableAdminRecord();
+    if (!record) return;
+    openExternalPoolAuthModal({
+      record,
+      forcedAuthStrategy: 'local_state_direct',
+      modeLabel: t('Windsurf 读取登录态'),
+      primaryActionLabel: t('开始读取登录态'),
+      completeActionLabel: t('确认读取登录态'),
+      onCompleted: () => {
+        handleOpenCodexStatus();
+      },
+    });
+  };
+
+  const handleOpenKiroLocalStateImport = () => {
+    const record = buildEditableAdminRecord();
+    if (!record) return;
+    openExternalPoolAuthModal({
+      record,
+      forcedAuthStrategy: 'local_state_direct',
+      modeLabel: t('Kiro 读取登录态'),
+      primaryActionLabel: t('开始读取登录态'),
+      completeActionLabel: t('确认读取登录态'),
+      onCompleted: () => {
+        handleOpenCodexStatus();
+      },
+    });
+  };
+
+  const handleOpenCodexStatus = () => {
+    const record = buildEditableAdminRecord();
+    if (!record) return;
     const adminStatusKind = getChannelAdminStatusKind(record);
     const onCopy = async (text) => {
       const ok = await copy(text);
@@ -1410,11 +1747,23 @@ const EditChannelModal = (props) => {
       else showError(t('复制失败'));
     };
 
-    if (adminStatusKind === 'windsurf') {
-      openWindsurfPoolModal({ t, record, onCopy });
+    if (adminStatusKind === 'windsurf' || adminStatusKind === 'cursor' || adminStatusKind === 'kiro') {
+      openExternalPoolModal({ t, record, onCopy });
       return;
     }
     openCodexUsageModal({ t, record, onCopy });
+  };
+
+  const handleOpenExternalPoolDashboard = () => {
+    const record = buildEditableAdminRecord();
+    if (!record) return;
+    const authConfig = getExternalPoolAuthConfig(record);
+    const dashboardUrl = String(authConfig?.dashboardUrl || '').trim();
+    if (!dashboardUrl) {
+      showError(t('当前渠道未配置 Dashboard 地址'));
+      return;
+    }
+    window.open(dashboardUrl, '_blank', 'noopener,noreferrer');
   };
 
   const isRemoteCodexProxyEdit =
@@ -1435,6 +1784,41 @@ const EditChannelModal = (props) => {
         base_url: inputs.base_url,
         other_info: inputs.other_info,
       }));
+
+  const isCursorProxyEdit =
+    isEdit &&
+    (inputs.cursor_pool_proxy === true ||
+      isCursorPoolProxy({
+        id: channelId,
+        name: inputs.name,
+        base_url: inputs.base_url,
+        other_info: inputs.other_info,
+      }));
+
+  const isKiroProxyEdit =
+    isEdit &&
+    (inputs.kiro_pool_proxy === true ||
+      isKiroPoolProxy({
+        id: channelId,
+        name: inputs.name,
+        base_url: inputs.base_url,
+        other_info: inputs.other_info,
+      }));
+
+  const statusActionText = useMemo(
+    () =>
+      getChannelAdminStatusActionText(
+        {
+          id: channelId,
+          name: inputs.name,
+          type: inputs.type,
+          base_url: inputs.base_url,
+          other_info: inputs.other_info,
+        },
+        t,
+      ),
+    [channelId, inputs.base_url, inputs.name, inputs.other_info, inputs.type, t],
+  );
 
   useEffect(() => {
     if (inputs.type !== 45) {
@@ -1945,11 +2329,7 @@ const EditChannelModal = (props) => {
     if (!otherInfo || typeof otherInfo !== 'object' || Array.isArray(otherInfo)) {
       otherInfo = {};
     }
-    if (localInputs.windsurf_pool_proxy === true) {
-      otherInfo.windsurf_pool_proxy = true;
-    } else {
-      delete otherInfo.windsurf_pool_proxy;
-    }
+    otherInfo = applyPoolProxyOtherInfo(otherInfo, localInputs);
     localInputs.other_info =
       Object.keys(otherInfo).length > 0
         ? JSON.stringify(otherInfo)
@@ -2092,7 +2472,42 @@ const EditChannelModal = (props) => {
     delete localInputs.upstream_model_update_ignored_models;
     delete localInputs.responses_model_mapping;
     delete localInputs.responses_compact_model_mapping;
+    delete localInputs.cursor_pool_proxy;
+    delete localInputs.cursor_pool_status_path;
+    delete localInputs.cursor_pool_accounts_path;
+    delete localInputs.cursor_pool_dashboard_path;
+    delete localInputs.cursor_pool_authorize_url;
+    delete localInputs.cursor_pool_authorize_hint;
+    delete localInputs.cursor_pool_auth_start_path;
+    delete localInputs.cursor_pool_auth_complete_path;
+    delete localInputs.cursor_pool_auth_strategy;
+    delete localInputs.cursor_pool_auth_header;
+    delete localInputs.cursor_pool_auth_scheme;
+    delete localInputs.cursor_pool_tunnel_hint;
+    delete localInputs.kiro_pool_proxy;
+    delete localInputs.kiro_pool_status_path;
+    delete localInputs.kiro_pool_accounts_path;
+    delete localInputs.kiro_pool_dashboard_path;
+    delete localInputs.kiro_pool_authorize_url;
+    delete localInputs.kiro_pool_authorize_hint;
+    delete localInputs.kiro_pool_auth_start_path;
+    delete localInputs.kiro_pool_auth_complete_path;
+    delete localInputs.kiro_pool_auth_strategy;
+    delete localInputs.kiro_pool_auth_header;
+    delete localInputs.kiro_pool_auth_scheme;
+    delete localInputs.kiro_pool_tunnel_hint;
     delete localInputs.windsurf_pool_proxy;
+    delete localInputs.windsurf_pool_status_path;
+    delete localInputs.windsurf_pool_accounts_path;
+    delete localInputs.windsurf_pool_dashboard_path;
+    delete localInputs.windsurf_pool_authorize_url;
+    delete localInputs.windsurf_pool_authorize_hint;
+    delete localInputs.windsurf_pool_auth_start_path;
+    delete localInputs.windsurf_pool_auth_complete_path;
+    delete localInputs.windsurf_pool_auth_strategy;
+    delete localInputs.windsurf_pool_auth_header;
+    delete localInputs.windsurf_pool_auth_scheme;
+    delete localInputs.windsurf_pool_tunnel_hint;
 
     let res;
     localInputs.auto_ban = localInputs.auto_ban ? 1 : 0;
@@ -2349,6 +2764,227 @@ const EditChannelModal = (props) => {
       </div>
     ) : null;
 
+  const currentExternalPoolKind = (() => {
+    if (!isEdit) return '';
+    if (isCursorProxyEdit) return 'cursor';
+    if (isKiroProxyEdit) return 'kiro';
+    if (isWindsurfProxyEdit) return 'windsurf';
+    return '';
+  })();
+
+  const externalPoolActionMeta = (() => {
+    if (!currentExternalPoolKind) return null;
+    if (currentExternalPoolKind === 'cursor') {
+      return {
+        primaryLabel: t('授权登录'),
+        secondaryLabel: t('读取登录态'),
+        hint: t('授权登录走 Cursor 专用回调适配层；读取登录态会直接扫描本机 Cursor 当前登录态并入池。'),
+      };
+    }
+    if (currentExternalPoolKind === 'kiro') {
+      return {
+        primaryLabel: t('授权登录'),
+        secondaryLabel: t('读取登录态'),
+        hint: t('授权登录保留给外部池服务扩展；读取登录态会直接扫描本机 Kiro 当前登录态并入池。'),
+      };
+    }
+    if (currentExternalPoolKind === 'windsurf') {
+      return {
+        primaryLabel: t('授权登录'),
+        secondaryLabel: t('读取登录态'),
+        hint: t('授权登录保留给外部池服务扩展；读取登录态会直接扫描本机 Windsurf 当前登录态并入池。'),
+      };
+    }
+    return {
+      primaryLabel: t('继续授权追加账号'),
+      hint: t('通过 Windsurf 外部池服务继续追加账号，完成后回看账号数、可用数和推理状态。'),
+    };
+  })();
+
+  const externalPoolEditActions =
+    inputs.type === 1 && currentExternalPoolKind && externalPoolActionMeta ? (
+      <ExternalPoolEditActions
+        primaryLabel={externalPoolActionMeta.primaryLabel}
+        secondaryLabel={externalPoolActionMeta.secondaryLabel}
+        hint={externalPoolActionMeta.hint}
+        statusLabel={statusActionText?.label || t('状态')}
+        dashboardLabel={t('打开 Dashboard')}
+        onAuthorize={
+          currentExternalPoolKind === 'cursor'
+            ? handleOpenCursorOAuthAdapterAuth
+            : handleOpenExternalPoolAuth
+        }
+        onSecondary={
+          currentExternalPoolKind === 'cursor'
+            ? handleOpenCursorLocalStateImport
+            : currentExternalPoolKind === 'windsurf'
+              ? handleOpenWindsurfLocalStateImport
+              : currentExternalPoolKind === 'kiro'
+                ? handleOpenKiroLocalStateImport
+              : undefined
+        }
+        onStatus={handleOpenCodexStatus}
+        onDashboard={handleOpenExternalPoolDashboard}
+        disabled={isIonetLocked}
+      />
+    ) : null;
+
+  const renderExternalPoolAdvancedConfig = (kind, title, options = {}) => {
+    const fieldPrefix = `${kind}_pool_`;
+    const authorizePlaceholder =
+      options.authorizePlaceholder || `https://example.com/${kind}/login`;
+    const tunnelHintPlaceholder =
+      options.tunnelHintPlaceholder ||
+      t(`例如：先确认 ${title.replace(t(' 池高级配置'), '')} 外部池服务在线，再访问 Dashboard`);
+    const authStrategyField = `${fieldPrefix}auth_strategy`;
+    const currentAuthStrategy = String(inputs?.[authStrategyField] || '');
+    return (
+      <div className='rounded border border-solid border-semi-color-border p-3'>
+        <div className='mb-2 text-sm font-medium'>{title}</div>
+        {(kind === 'cursor' || kind === 'windsurf' || kind === 'kiro') && (
+          <Form.Select
+            field={authStrategyField}
+            label={t('授权策略')}
+            initValue={inputs[authStrategyField]}
+            onChange={(value) => handleInputChange(authStrategyField, value)}
+            optionList={[
+              { label: 'local_state_direct', value: 'local_state_direct' },
+              { label: 'manual_token_import', value: 'manual_token_import' },
+              ...(kind === 'cursor'
+                ? [{ label: 'oauth_callback', value: 'oauth_callback' }]
+                : []),
+            ]}
+            extraText={t(
+              kind === 'cursor'
+                ? 'local_state_direct 会读取本机 Cursor 登录态入池；oauth_callback 走回调适配导入；manual_token_import 则走手工凭据导入'
+                : kind === 'windsurf'
+                  ? 'local_state_direct 会读取本机 Windsurf 登录态入池；manual_token_import 则走手工凭据导入'
+                  : 'local_state_direct 会读取本机 Kiro 登录态入池；manual_token_import 则走手工凭据导入',
+            )}
+          />
+        )}
+        <Form.Select
+          field={`${fieldPrefix}inference_mode`}
+          label={t('推理接口模式')}
+          initValue={inputs[`${fieldPrefix}inference_mode`]}
+          onChange={(value) => handleInputChange(`${fieldPrefix}inference_mode`, value)}
+          optionList={EXTERNAL_POOL_INFERENCE_OPTIONS}
+          extraText={t(
+            '用于对齐池服务实际支持的推理路径；dual 表示同时支持 /v1/responses 与 /v1/chat/completions',
+          )}
+        />
+        <Form.Switch
+          field={`${fieldPrefix}probe_inference`}
+          label={t('启用推理探测')}
+          checkedText={t('开')}
+          uncheckedText={t('关')}
+          initValue={inputs[`${fieldPrefix}probe_inference`]}
+          onChange={(value) => handleInputChange(`${fieldPrefix}probe_inference`, value)}
+          extraText={t(
+            '开启后，状态汇总会额外做一次轻量推理请求，用于区分“已认证但不可推理”的情况',
+          )}
+        />
+        <Form.Input
+          field={`${fieldPrefix}status_path`}
+          label={t('状态接口路径')}
+          placeholder='/auth/status'
+          initValue={inputs[`${fieldPrefix}status_path`]}
+          onChange={(value) => handleInputChange(`${fieldPrefix}status_path`, value)}
+          showClear
+        />
+        <Form.Input
+          field={`${fieldPrefix}accounts_path`}
+          label={t('账号列表路径')}
+          placeholder='/auth/accounts'
+          initValue={inputs[`${fieldPrefix}accounts_path`]}
+          onChange={(value) => handleInputChange(`${fieldPrefix}accounts_path`, value)}
+          showClear
+        />
+        <Form.Input
+          field={`${fieldPrefix}dashboard_path`}
+          label={t('Dashboard 路径')}
+          placeholder='/dashboard'
+          initValue={inputs[`${fieldPrefix}dashboard_path`]}
+          onChange={(value) => handleInputChange(`${fieldPrefix}dashboard_path`, value)}
+          showClear
+        />
+        <Form.Input
+          field={`${fieldPrefix}authorize_url`}
+          label={t('授权入口 URL')}
+          placeholder={authorizePlaceholder}
+          initValue={inputs[`${fieldPrefix}authorize_url`]}
+          onChange={(value) => handleInputChange(`${fieldPrefix}authorize_url`, value)}
+          showClear
+        />
+        <Form.Input
+          field={`${fieldPrefix}authorize_hint`}
+          label={t('授权提示')}
+          placeholder={t('例如：完成手动授权后，回到池状态页确认账号数')}
+          initValue={inputs[`${fieldPrefix}authorize_hint`]}
+          onChange={(value) => handleInputChange(`${fieldPrefix}authorize_hint`, value)}
+          showClear
+        />
+        <Form.Input
+          field={`${fieldPrefix}auth_start_path`}
+          label={t('授权开始接口')}
+          placeholder='/auth/start'
+          initValue={inputs[`${fieldPrefix}auth_start_path`]}
+          onChange={(value) => handleInputChange(`${fieldPrefix}auth_start_path`, value)}
+          showClear
+        />
+        <Form.Input
+          field={`${fieldPrefix}auth_complete_path`}
+          label={t('授权完成接口')}
+          placeholder='/auth/complete'
+          initValue={inputs[`${fieldPrefix}auth_complete_path`]}
+          onChange={(value) => handleInputChange(`${fieldPrefix}auth_complete_path`, value)}
+          showClear
+        />
+        <Form.Input
+          field={`${fieldPrefix}auth_header`}
+          label={t('认证 Header')}
+          placeholder='Authorization'
+          initValue={inputs[`${fieldPrefix}auth_header`]}
+          onChange={(value) => handleInputChange(`${fieldPrefix}auth_header`, value)}
+          showClear
+        />
+        <Form.Input
+          field={`${fieldPrefix}auth_scheme`}
+          label={t('认证 Scheme')}
+          placeholder='Bearer'
+          initValue={inputs[`${fieldPrefix}auth_scheme`]}
+          onChange={(value) => handleInputChange(`${fieldPrefix}auth_scheme`, value)}
+          showClear
+        />
+        <Form.Input
+          field={`${fieldPrefix}tunnel_hint`}
+          label={t('运维提示')}
+          placeholder={tunnelHintPlaceholder}
+          initValue={inputs[`${fieldPrefix}tunnel_hint`]}
+          onChange={(value) => handleInputChange(`${fieldPrefix}tunnel_hint`, value)}
+          showClear
+        />
+        {(kind === 'cursor' || kind === 'windsurf' || kind === 'kiro') &&
+          currentAuthStrategy === 'local_state_direct' && (
+          <Text type='tertiary' size='small'>
+            {t(
+              kind === 'cursor'
+                ? '当前策略会优先读取本机 Cursor 登录态，不需要标准 OAuth 回调。'
+                : kind === 'windsurf'
+                  ? '当前策略会优先读取本机 Windsurf 登录态，不需要标准 OAuth 回调。'
+                  : '当前策略会优先读取本机 Kiro 登录态，不需要标准 OAuth 回调。',
+            )}
+          </Text>
+        )}
+        {kind === 'cursor' && currentAuthStrategy === 'oauth_callback' && (
+          <Text type='tertiary' size='small'>
+            {t('当前策略会通过 Cursor 专用回调适配层接收授权结果，再解析并导入当前渠道池。')}
+          </Text>
+        )}
+      </div>
+    );
+  };
+
   const channelOptionList = useMemo(
     () =>
       CHANNEL_OPTIONS.map((opt) => ({
@@ -2442,14 +3078,18 @@ const EditChannelModal = (props) => {
               {isEdit &&
                 (inputs.type === 57 ||
                   isRemoteCodexProxyEdit ||
-                  isWindsurfProxyEdit) && (
-                <Button
-                  size='small'
-                  type='tertiary'
-                  onClick={handleOpenCodexStatus}
-                >
-                  {t('帐号/池状态')}
-                </Button>
+                  isWindsurfProxyEdit ||
+                  isCursorProxyEdit ||
+                  isKiroProxyEdit) && (
+                <Tooltip content={statusActionText?.tooltip || t('查看渠道状态')}>
+                  <Button
+                    size='small'
+                    type='tertiary'
+                    onClick={handleOpenCodexStatus}
+                  >
+                    {statusActionText?.label || t('状态')}
+                  </Button>
+                </Tooltip>
               )}
               {!isEdit && (
                 <Button
@@ -3185,6 +3825,8 @@ const EditChannelModal = (props) => {
                         </>
                       )}
 
+                      {inputs.type === 1 && externalPoolEditActions}
+
                       {inputs.type === 20 && (
                         <Form.Switch
                           field='is_enterprise_account'
@@ -3409,15 +4051,22 @@ const EditChannelModal = (props) => {
                                         {t('Codex 授权')}
                                       </Button>
                                       {isEdit && (
-                                        <Button
-                                          size='small'
-                                          type='primary'
-                                          theme='outline'
-                                          onClick={handleOpenCodexStatus}
-                                          disabled={isIonetLocked}
+                                        <Tooltip
+                                          content={
+                                            statusActionText?.tooltip ||
+                                            t('查看渠道状态')
+                                          }
                                         >
-                                          {t('帐号/池状态')}
-                                        </Button>
+                                          <Button
+                                            size='small'
+                                            type='primary'
+                                            theme='outline'
+                                            onClick={handleOpenCodexStatus}
+                                            disabled={isIonetLocked}
+                                          >
+                                            {statusActionText?.label || t('状态')}
+                                          </Button>
+                                        </Tooltip>
                                       )}
                                       {isEdit && (
                                         <Button
@@ -4032,6 +4681,38 @@ const EditChannelModal = (props) => {
 
                           {inputs.type === 1 && (
                             <Form.Switch
+                              field='cursor_pool_proxy'
+                              label={t('Cursor 池代理')}
+                              checkedText={t('开')}
+                              uncheckedText={t('关')}
+                              initValue={inputs.cursor_pool_proxy}
+                              onChange={(value) =>
+                                handleInputChange('cursor_pool_proxy', value)
+                              }
+                              extraText={t(
+                                '开启后，此渠道会显示 Cursor 帐号/池状态面板，并通过当前 API 地址和密钥读取池信息',
+                              )}
+                            />
+                          )}
+
+                          {inputs.type === 1 && (
+                            <Form.Switch
+                              field='kiro_pool_proxy'
+                              label={t('Kiro 池代理')}
+                              checkedText={t('开')}
+                              uncheckedText={t('关')}
+                              initValue={inputs.kiro_pool_proxy}
+                              onChange={(value) =>
+                                handleInputChange('kiro_pool_proxy', value)
+                              }
+                              extraText={t(
+                                '开启后，此渠道会显示 Kiro 帐号/池状态面板，并通过当前 API 地址和密钥读取池信息',
+                              )}
+                            />
+                          )}
+
+                          {inputs.type === 1 && (
+                            <Form.Switch
                               field='windsurf_pool_proxy'
                               label={t('Windsurf 池代理')}
                               checkedText={t('开')}
@@ -4045,6 +4726,24 @@ const EditChannelModal = (props) => {
                               )}
                             />
                           )}
+
+                          {inputs.type === 1 && inputs.cursor_pool_proxy === true &&
+                            renderExternalPoolAdvancedConfig('cursor', t('Cursor 池高级配置'), {
+                              authorizePlaceholder: 'https://example.com/cursor/login',
+                              tunnelHintPlaceholder: t('例如：先确认 Cursor 外部池服务在线，再访问 Dashboard'),
+                            })}
+
+                          {inputs.type === 1 && inputs.kiro_pool_proxy === true &&
+                            renderExternalPoolAdvancedConfig('kiro', t('Kiro 池高级配置'), {
+                              authorizePlaceholder: 'https://example.com/kiro/login',
+                              tunnelHintPlaceholder: t('例如：先确认 Kiro 外部池服务在线，再访问 Dashboard'),
+                            })}
+
+                          {inputs.type === 1 && inputs.windsurf_pool_proxy === true &&
+                            renderExternalPoolAdvancedConfig('windsurf', t('Windsurf 池高级配置'), {
+                              authorizePlaceholder: 'https://example.com/windsurf/login',
+                              tunnelHintPlaceholder: t('例如：先建立到 Windsurf 池服务的安全通道'),
+                            })}
 
                           {inputs.type === 22 && (
                             <div>

@@ -52,7 +52,9 @@ type Channel struct {
 	// add after v0.8.5
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
 
+	CursorPoolSummary   *CursorPoolSummary   `json:"cursor_pool_summary,omitempty" gorm:"-"`
 	CodexPoolSummary    *CodexPoolSummary    `json:"codex_pool_summary,omitempty" gorm:"-"`
+	KiroPoolSummary     *KiroPoolSummary     `json:"kiro_pool_summary,omitempty" gorm:"-"`
 	WindsurfPoolSummary *WindsurfPoolSummary `json:"windsurf_pool_summary,omitempty" gorm:"-"`
 
 	OtherSettings string `json:"settings" gorm:"column:settings"` // 其他设置，存储azure版本等不需要检索的信息，详见dto.ChannelOtherSettings
@@ -70,10 +72,46 @@ type CodexPoolSummary struct {
 	TotalCount     int `json:"total_count"`
 }
 
+type CursorPoolSummary struct {
+	AvailableCount   int    `json:"available_count"`
+	TotalCount       int    `json:"total_count"`
+	ErrorCount       int    `json:"error_count"`
+	Availability     string `json:"availability,omitempty"`
+	PoolState        string `json:"pool_state,omitempty"`
+	Diagnosis        string `json:"diagnosis,omitempty"`
+	UpstreamError    string `json:"upstream_error,omitempty"`
+	AuthCapable      bool   `json:"auth_capable,omitempty"`
+	InferenceProbed  bool   `json:"inference_probed,omitempty"`
+	InferenceCapable bool   `json:"inference_capable,omitempty"`
+	InferenceError   string `json:"inference_error,omitempty"`
+}
+
+type KiroPoolSummary struct {
+	AvailableCount   int    `json:"available_count"`
+	TotalCount       int    `json:"total_count"`
+	ErrorCount       int    `json:"error_count"`
+	Availability     string `json:"availability,omitempty"`
+	PoolState        string `json:"pool_state,omitempty"`
+	Diagnosis        string `json:"diagnosis,omitempty"`
+	UpstreamError    string `json:"upstream_error,omitempty"`
+	AuthCapable      bool   `json:"auth_capable,omitempty"`
+	InferenceProbed  bool   `json:"inference_probed,omitempty"`
+	InferenceCapable bool   `json:"inference_capable,omitempty"`
+	InferenceError   string `json:"inference_error,omitempty"`
+}
+
 type WindsurfPoolSummary struct {
-	AvailableCount int `json:"available_count"`
-	TotalCount     int `json:"total_count"`
-	ErrorCount     int `json:"error_count"`
+	AvailableCount   int    `json:"available_count"`
+	TotalCount       int    `json:"total_count"`
+	ErrorCount       int    `json:"error_count"`
+	Availability     string `json:"availability,omitempty"`
+	PoolState        string `json:"pool_state,omitempty"`
+	Diagnosis        string `json:"diagnosis,omitempty"`
+	UpstreamError    string `json:"upstream_error,omitempty"`
+	AuthCapable      bool   `json:"auth_capable,omitempty"`
+	InferenceProbed  bool   `json:"inference_probed,omitempty"`
+	InferenceCapable bool   `json:"inference_capable,omitempty"`
+	InferenceError   string `json:"inference_error,omitempty"`
 }
 
 type ChannelInfo struct {

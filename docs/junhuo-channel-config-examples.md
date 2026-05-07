@@ -144,6 +144,107 @@ Antigravity 渠道最初可以是单账号形态。
 - `key` 不是普通 token，而是 OAuth JSON
 - `project_id` / `managed_project_id` 是否真实可用非常关键
 
+## 4.1 Cursor 外部池代理渠道样例
+
+第一阶段建议把 Cursor 作为独立外部池代理渠道接入，而不是直接并入 `ChannelTypeCodex` 内部池。
+
+示意：
+
+```json
+{
+  "name": "cursor-pool-proxy",
+  "type": "OpenAI-compatible",
+  "status": "enabled",
+  "priority": 80,
+  "weight": 100,
+  "group": "default",
+  "models": "gpt-5.4,gpt-5.5",
+  "base_url": "http://127.0.0.1:3401",
+  "key": "sk-cursor-proxy",
+  "other": {
+    "cursor_pool_proxy": true,
+    "cursor_pool_status_path": "/auth/status",
+    "cursor_pool_accounts_path": "/auth/accounts",
+    "cursor_pool_dashboard_path": "/dashboard",
+    "cursor_pool_authorize_url": "http://127.0.0.1:3401/dashboard/login",
+    "cursor_pool_authorize_hint": "完成 Cursor 手动授权后，回到池状态页确认账号数和可用数",
+    "cursor_pool_auth_start_path": "/auth/start",
+    "cursor_pool_auth_complete_path": "/auth/complete"
+  }
+}
+```
+
+关注点：
+
+- 默认仍走普通 OpenAI-compatible relay
+- `other` 里的 `cursor_pool_proxy=true` 才会触发后台池状态面板
+- 若外部 Cursor 服务接口路径不同，可直接改 `*_path`
+- 若后面要走手动授权登录，可直接配置 `cursor_pool_authorize_url`
+
+## 4.2 Windsurf 外部池代理渠道样例
+
+```json
+{
+  "name": "windsurf-pool-proxy",
+  "type": "OpenAI-compatible",
+  "status": "enabled",
+  "priority": 70,
+  "weight": 100,
+  "group": "default",
+  "models": "gpt-5.4,gpt-5.5,claude-sonnet",
+  "base_url": "http://127.0.0.1:3003",
+  "key": "windsurf-api-key",
+  "other": {
+    "windsurf_pool_proxy": true,
+    "windsurf_pool_status_path": "/auth/status",
+    "windsurf_pool_accounts_path": "/auth/accounts",
+    "windsurf_pool_dashboard_path": "/dashboard",
+    "windsurf_pool_authorize_url": "http://127.0.0.1:3003/dashboard/login",
+    "windsurf_pool_authorize_hint": "完成 Windsurf 手动授权后，回到池状态页确认账号数和可用数",
+    "windsurf_pool_auth_start_path": "/auth/start",
+    "windsurf_pool_auth_complete_path": "/auth/complete"
+  }
+}
+```
+
+关注点：
+
+- Windsurf 推荐让外部池服务自己维护补池和会话
+- `new-api` 只消费池摘要和账号列表
+- `windsurf_pool_authorize_url` 适合预留给后续手动授权入口
+
+## 4.3 Kiro 外部池代理渠道样例
+
+```json
+{
+  "name": "kiro-pool-proxy",
+  "type": "OpenAI-compatible",
+  "status": "enabled",
+  "priority": 60,
+  "weight": 100,
+  "group": "default",
+  "models": "gpt-5.4,gpt-5.5,claude-sonnet",
+  "base_url": "http://127.0.0.1:3501",
+  "key": "sk-kiro-proxy",
+  "other": {
+    "kiro_pool_proxy": true,
+    "kiro_pool_status_path": "/auth/status",
+    "kiro_pool_accounts_path": "/auth/accounts",
+    "kiro_pool_dashboard_path": "/dashboard",
+    "kiro_pool_authorize_url": "http://127.0.0.1:3501/dashboard/login",
+    "kiro_pool_authorize_hint": "完成 Kiro 手动授权后，回到池状态页确认账号数和可用数",
+    "kiro_pool_auth_start_path": "/auth/start",
+    "kiro_pool_auth_complete_path": "/auth/complete"
+  }
+}
+```
+
+关注点：
+
+- Kiro 上游若不是 `/auth/status` / `/auth/accounts`，直接在 `other` 中覆盖路径
+- 第一阶段不要求把上游账号明细回灌进 `channel_info.multi_key_meta`
+- `kiro_pool_authorize_url` 适合预留给后续手动授权入口
+
 ## 5. Antigravity 多账号池渠道样例
 
 `antigravity-openclaw2` 这类渠道的重点，不是某一个 key，而是多账号池。

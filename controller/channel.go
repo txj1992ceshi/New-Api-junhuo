@@ -131,9 +131,60 @@ func injectWindsurfPoolSummary(ctx context.Context, channel *model.Channel) {
 	summary, err := service.GetWindsurfPoolSummary(ctx, channel)
 	if err != nil {
 		common.SysLog(fmt.Sprintf("failed to load windsurf pool summary: channel_id=%d err=%v", channel.Id, err))
+		diagnosis := service.ClassifyExternalPoolSummary(nil, nil, err)
+		channel.WindsurfPoolSummary = &model.WindsurfPoolSummary{
+			Availability:  diagnosis.Availability,
+			PoolState:     "upstream_error",
+			Diagnosis:     diagnosis.Diagnosis,
+			UpstreamError: err.Error(),
+		}
 		return
 	}
 	channel.WindsurfPoolSummary = summary
+}
+
+func injectCursorPoolSummary(ctx context.Context, channel *model.Channel) {
+	if channel == nil {
+		return
+	}
+	if _, ok := service.ResolveCursorPoolProxy(channel); !ok {
+		return
+	}
+	summary, err := service.GetCursorPoolSummary(ctx, channel)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to load cursor pool summary: channel_id=%d err=%v", channel.Id, err))
+		diagnosis := service.ClassifyExternalPoolSummary(nil, nil, err)
+		channel.CursorPoolSummary = &model.CursorPoolSummary{
+			Availability:  diagnosis.Availability,
+			PoolState:     "upstream_error",
+			Diagnosis:     diagnosis.Diagnosis,
+			UpstreamError: err.Error(),
+		}
+		return
+	}
+	channel.CursorPoolSummary = summary
+}
+
+func injectKiroPoolSummary(ctx context.Context, channel *model.Channel) {
+	if channel == nil {
+		return
+	}
+	if _, ok := service.ResolveKiroPoolProxy(channel); !ok {
+		return
+	}
+	summary, err := service.GetKiroPoolSummary(ctx, channel)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to load kiro pool summary: channel_id=%d err=%v", channel.Id, err))
+		diagnosis := service.ClassifyExternalPoolSummary(nil, nil, err)
+		channel.KiroPoolSummary = &model.KiroPoolSummary{
+			Availability:  diagnosis.Availability,
+			PoolState:     "upstream_error",
+			Diagnosis:     diagnosis.Diagnosis,
+			UpstreamError: err.Error(),
+		}
+		return
+	}
+	channel.KiroPoolSummary = summary
 }
 
 func GetAllChannels(c *gin.Context) {
@@ -220,6 +271,8 @@ func GetAllChannels(c *gin.Context) {
 	defer cancel()
 	for _, datum := range channelData {
 		injectRemoteCodexPoolSummary(enrichCtx, datum)
+		injectCursorPoolSummary(enrichCtx, datum)
+		injectKiroPoolSummary(enrichCtx, datum)
 		injectWindsurfPoolSummary(enrichCtx, datum)
 	}
 
@@ -425,6 +478,8 @@ func SearchChannels(c *gin.Context) {
 	defer cancel()
 	for _, datum := range pagedData {
 		injectRemoteCodexPoolSummary(enrichCtx, datum)
+		injectCursorPoolSummary(enrichCtx, datum)
+		injectKiroPoolSummary(enrichCtx, datum)
 		injectWindsurfPoolSummary(enrichCtx, datum)
 	}
 
@@ -458,6 +513,8 @@ func GetChannel(c *gin.Context) {
 			markRemoteCodexPoolProxy(channel)
 			injectRemoteCodexPoolSummary(c.Request.Context(), channel)
 		}
+		injectCursorPoolSummary(c.Request.Context(), channel)
+		injectKiroPoolSummary(c.Request.Context(), channel)
 		injectWindsurfPoolSummary(c.Request.Context(), channel)
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -594,6 +651,18 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 				return fmt.Errorf("Antigravity key JSON must include project_id or managed_project_id")
 			}
 		}
+	}
+
+	// External pool proxy config preflight (Cursor / Windsurf / Kiro).
+	// When *_pool_proxy=true, ensure base_url and key are provided before saving.
+	if err := service.ValidateExternalPoolProxy(channel, service.ExternalPoolKindCursor); err != nil {
+		return err
+	}
+	if err := service.ValidateExternalPoolProxy(channel, service.ExternalPoolKindWindsurf); err != nil {
+		return err
+	}
+	if err := service.ValidateExternalPoolProxy(channel, service.ExternalPoolKindKiro); err != nil {
+		return err
 	}
 
 	return nil

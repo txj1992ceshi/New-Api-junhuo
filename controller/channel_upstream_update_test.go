@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/QuantumNous/new-api/dto"
@@ -121,6 +123,27 @@ func TestCollectPendingUpstreamModelChangesFromModels_WithIgnoredRegexPatterns(t
 
 	require.Equal(t, []string{"claude-3-5-sonnet"}, pendingAddModels)
 	require.Equal(t, []string{}, pendingRemoveModels)
+}
+
+func TestFetchChannelUpstreamModelIDsFromExternalPoolStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/auth/status", r.URL.Path)
+		require.Equal(t, "Bearer proxy-key", r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":["gpt-5.5","gpt-5.4","gpt-5.5"]}`))
+	}))
+	defer server.Close()
+
+	channel := &model.Channel{
+		Name:      "cursor-pool-proxy",
+		Key:       "proxy-key",
+		BaseURL:   &server.URL,
+		OtherInfo: `{"cursor_pool_proxy":true}`,
+	}
+
+	models, err := fetchChannelUpstreamModelIDs(channel)
+	require.NoError(t, err)
+	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, models)
 }
 
 func TestBuildUpstreamModelUpdateTaskNotificationContent_OmitOverflowDetails(t *testing.T) {

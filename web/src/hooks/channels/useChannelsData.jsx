@@ -39,9 +39,11 @@ import { useChannelUpstreamUpdates } from './useChannelUpstreamUpdates';
 import { parseUpstreamUpdateMeta } from './upstreamUpdateUtils';
 import { Modal, Button } from '@douyinfe/semi-ui';
 import { openCodexUsageModal } from '../../components/table/channels/modals/CodexUsageModal';
-import { openWindsurfPoolModal } from '../../components/table/channels/modals/WindsurfPoolModal';
+import { openExternalPoolModal } from '../../components/table/channels/modals/WindsurfPoolModal';
 import {
   getChannelAdminStatusKind,
+  getExternalPoolAvailabilityRank,
+  matchExternalPoolQuickFilter,
 } from '../../components/table/channels/channelCodexProxy';
 
 export const useChannelsData = () => {
@@ -77,6 +79,12 @@ export const useChannelsData = () => {
   // Status filter
   const [statusFilter, setStatusFilter] = useState(
     localStorage.getItem('channel-status-filter') || 'all',
+  );
+  const [externalPoolIssueFirst, setExternalPoolIssueFirst] = useState(
+    localStorage.getItem('channel-external-pool-issue-first') === 'true',
+  );
+  const [externalPoolQuickFilter, setExternalPoolQuickFilter] = useState(
+    localStorage.getItem('channel-external-pool-quick-filter') || 'all',
   );
 
   // Type tabs states
@@ -236,19 +244,41 @@ export const useChannelsData = () => {
   };
 
   // Data formatting
-  const setChannelFormat = (channels, enableTagMode) => {
+  const sortChannelsByExternalPoolHealth = (
+    items,
+    issueFirst = externalPoolIssueFirst,
+  ) => {
+    if (!issueFirst || !Array.isArray(items) || items.length <= 1) {
+      return items;
+    }
+    return [...items].sort((a, b) => {
+      const aRank = getExternalPoolAvailabilityRank(a);
+      const bRank = getExternalPoolAvailabilityRank(b);
+      if (aRank !== bRank) {
+        return aRank - bRank;
+      }
+      return Number(a?.id || 0) - Number(b?.id || 0);
+    });
+  };
+
+  const setChannelFormat = (
+    channels,
+    enableTagMode,
+    issueFirst = externalPoolIssueFirst,
+  ) => {
+    const sortedChannels = sortChannelsByExternalPoolHealth(channels, issueFirst);
     let channelDates = [];
     let channelTags = {};
 
-    for (let i = 0; i < channels.length; i++) {
-      channels[i].upstreamUpdateMeta = parseUpstreamUpdateMeta(
-        channels[i].settings,
+    for (let i = 0; i < sortedChannels.length; i++) {
+      sortedChannels[i].upstreamUpdateMeta = parseUpstreamUpdateMeta(
+        sortedChannels[i].settings,
       );
-      channels[i].key = '' + channels[i].id;
+      sortedChannels[i].key = '' + sortedChannels[i].id;
       if (!enableTagMode) {
-        channelDates.push(channels[i]);
+        channelDates.push(sortedChannels[i]);
       } else {
-        let tag = channels[i].tag ? channels[i].tag : '';
+        let tag = sortedChannels[i].tag ? sortedChannels[i].tag : '';
         let tagIndex = channelTags[tag];
         let tagChannelDates = undefined;
 
@@ -272,25 +302,25 @@ export const useChannelsData = () => {
         }
 
         if (tagChannelDates.priority === -1) {
-          tagChannelDates.priority = channels[i].priority;
+          tagChannelDates.priority = sortedChannels[i].priority;
         } else {
-          if (tagChannelDates.priority !== channels[i].priority) {
+          if (tagChannelDates.priority !== sortedChannels[i].priority) {
             tagChannelDates.priority = '';
           }
         }
 
         if (tagChannelDates.weight === -1) {
-          tagChannelDates.weight = channels[i].weight;
+          tagChannelDates.weight = sortedChannels[i].weight;
         } else {
-          if (tagChannelDates.weight !== channels[i].weight) {
+          if (tagChannelDates.weight !== sortedChannels[i].weight) {
             tagChannelDates.weight = '';
           }
         }
 
         if (tagChannelDates.group === '') {
-          tagChannelDates.group = channels[i].group;
+          tagChannelDates.group = sortedChannels[i].group;
         } else {
-          let channelGroupsStr = channels[i].group;
+          let channelGroupsStr = sortedChannels[i].group;
           channelGroupsStr.split(',').forEach((item, index) => {
             if (tagChannelDates.group.indexOf(item) === -1) {
               tagChannelDates.group += ',' + item;
@@ -298,12 +328,12 @@ export const useChannelsData = () => {
           });
         }
 
-        tagChannelDates.children.push(channels[i]);
-        if (channels[i].status === 1) {
+        tagChannelDates.children.push(sortedChannels[i]);
+        if (sortedChannels[i].status === 1) {
           tagChannelDates.status = 1;
         }
-        tagChannelDates.used_quota += channels[i].used_quota;
-        tagChannelDates.response_time += channels[i].response_time;
+        tagChannelDates.used_quota += sortedChannels[i].used_quota;
+        tagChannelDates.response_time += sortedChannels[i].response_time;
         tagChannelDates.response_time = tagChannelDates.response_time / 2;
       }
     }
@@ -328,6 +358,7 @@ export const useChannelsData = () => {
     enableTagMode,
     typeKey = activeTypeKey,
     statusF,
+    issueFirst = externalPoolIssueFirst,
   ) => {
     if (statusF === undefined) statusF = statusFilter;
 
@@ -341,6 +372,7 @@ export const useChannelsData = () => {
         page,
         pageSize,
         idSort,
+        issueFirst,
       );
       setLoading(false);
       return;
@@ -368,7 +400,7 @@ export const useChannelsData = () => {
         );
         setTypeCounts({ ...type_counts, all: sumAll });
       }
-      setChannelFormat(items, enableTagMode);
+      setChannelFormat(items, enableTagMode, issueFirst);
       setChannelCount(total);
     } else {
       showError(message);
@@ -384,6 +416,7 @@ export const useChannelsData = () => {
     page = 1,
     pageSz = pageSize,
     sortFlag = idSort,
+    issueFirst = externalPoolIssueFirst,
   ) => {
     const { searchKeyword, searchGroup, searchModel } = getFormValues();
     setSearching(true);
@@ -396,6 +429,7 @@ export const useChannelsData = () => {
           enableTagMode,
           typeKey,
           statusF,
+          issueFirst,
         );
         return;
       }
@@ -413,7 +447,7 @@ export const useChannelsData = () => {
           0,
         );
         setTypeCounts({ ...type_counts, all: sumAll });
-        setChannelFormat(items, enableTagMode);
+        setChannelFormat(items, enableTagMode, issueFirst);
         setChannelCount(total);
         setActivePage(page);
       } else {
@@ -771,8 +805,8 @@ export const useChannelsData = () => {
       });
       return;
     }
-    if (adminStatusKind === 'windsurf') {
-      openWindsurfPoolModal({
+    if (adminStatusKind === 'windsurf' || adminStatusKind === 'cursor' || adminStatusKind === 'kiro') {
+      openExternalPoolModal({
         t,
         record,
         onCopy: async (text) => {
@@ -1150,9 +1184,194 @@ export const useChannelsData = () => {
     return keys;
   }, [channelTypeCounts]);
 
+  const filteredChannels = useMemo(() => {
+    if (
+      !externalPoolQuickFilter ||
+      externalPoolQuickFilter === 'all' ||
+      !Array.isArray(channels)
+    ) {
+      return channels;
+    }
+
+    return channels
+      .map((channel) => {
+        if (channel.children !== undefined) {
+          const filteredChildren = channel.children.filter((child) =>
+            matchExternalPoolQuickFilter(child, externalPoolQuickFilter),
+          );
+          if (filteredChildren.length === 0) {
+            return null;
+          }
+          return {
+            ...channel,
+            children: filteredChildren,
+          };
+        }
+        return matchExternalPoolQuickFilter(channel, externalPoolQuickFilter)
+          ? channel
+          : null;
+      })
+      .filter(Boolean);
+  }, [channels, externalPoolQuickFilter]);
+
+  const filteredChannelCount = useMemo(() => {
+    let count = 0;
+    filteredChannels.forEach((channel) => {
+      if (channel?.children !== undefined) {
+        count += channel.children.length;
+      } else {
+        count += 1;
+      }
+    });
+    return count;
+  }, [filteredChannels]);
+
+  const externalPoolPageStats = useMemo(() => {
+    const stats = {
+      total: 0,
+      available: 0,
+      degraded: 0,
+      unavailable: 0,
+      authRejected: 0,
+      emptyPool: 0,
+      upstreamUnreachable: 0,
+      upstreamPathNotFound: 0,
+      rateLimited: 0,
+    };
+
+    const collect = (record) => {
+      const kind = getChannelAdminStatusKind(record);
+      if (!kind || kind === 'codex') {
+        return;
+      }
+      stats.total += 1;
+      if (matchExternalPoolQuickFilter(record, 'available')) {
+        stats.available += 1;
+      }
+      if (matchExternalPoolQuickFilter(record, 'degraded')) {
+        stats.degraded += 1;
+      }
+      if (matchExternalPoolQuickFilter(record, 'unavailable')) {
+        stats.unavailable += 1;
+      }
+      if (matchExternalPoolQuickFilter(record, 'auth_rejected')) {
+        stats.authRejected += 1;
+      }
+      if (matchExternalPoolQuickFilter(record, 'empty_pool')) {
+        stats.emptyPool += 1;
+      }
+      if (matchExternalPoolQuickFilter(record, 'upstream_unreachable')) {
+        stats.upstreamUnreachable += 1;
+      }
+      if (matchExternalPoolQuickFilter(record, 'upstream_path_not_found')) {
+        stats.upstreamPathNotFound += 1;
+      }
+      if (matchExternalPoolQuickFilter(record, 'rate_limited')) {
+        stats.rateLimited += 1;
+      }
+    };
+
+    filteredChannels.forEach((channel) => {
+      if (channel?.children !== undefined) {
+        channel.children.forEach(collect);
+      } else {
+        collect(channel);
+      }
+    });
+
+    return stats;
+  }, [filteredChannels]);
+
+  const externalPoolNextAction = useMemo(() => {
+    if (externalPoolPageStats.total <= 0) {
+      return {
+        kind: 'idle',
+        title: t('当前页暂无外部池渠道'),
+        description: t('等你把 Cursor / Windsurf / Kiro 代理渠道配进来后，这里会开始给出联调建议。'),
+      };
+    }
+
+    const candidates = [
+      {
+        key: 'authRejected',
+        filter: 'auth_rejected',
+        count: externalPoolPageStats.authRejected,
+        title: t('先查认证失败'),
+        description: t('当前页认证失败最多。先点“认证失败”，再检查 key、认证 Header、认证 Scheme 和上游是否已换密钥。'),
+      },
+      {
+        key: 'upstreamUnreachable',
+        filter: 'upstream_unreachable',
+        count: externalPoolPageStats.upstreamUnreachable,
+        title: t('先查连接失败'),
+        description: t('当前页连接失败最多。先点“连接失败”，再检查 base_url、端口监听、池服务进程和网络连通性。'),
+      },
+      {
+        key: 'upstreamPathNotFound',
+        filter: 'upstream_path_not_found',
+        count: externalPoolPageStats.upstreamPathNotFound,
+        title: t('先查路径错误'),
+        description: t('当前页路径错误最多。优先核对 status/accounts/auth 相关路径配置，不要先怀疑模型或账号。'),
+      },
+      {
+        key: 'emptyPool',
+        filter: 'empty_pool',
+        count: externalPoolPageStats.emptyPool,
+        title: t('先补空池'),
+        description: t('当前页空池最多。先确认上游是否真的写入了账号，再继续做 /v1/models 或 /v1/responses 验证。'),
+      },
+      {
+        key: 'rateLimited',
+        filter: 'rate_limited',
+        count: externalPoolPageStats.rateLimited,
+        title: t('先处理限流'),
+        description: t('当前页限流最多。优先降 priority、缩 models，避免在限流状态下继续放量。'),
+      },
+      {
+        key: 'unavailable',
+        filter: 'unavailable',
+        count: externalPoolPageStats.unavailable,
+        title: t('先排不可用渠道'),
+        description: t('当前页不可用渠道较多。建议打开“外部池异常前置”，优先处理最靠前的几条。'),
+      },
+      {
+        key: 'degraded',
+        filter: 'degraded',
+        count: externalPoolPageStats.degraded,
+        title: t('先查降级渠道'),
+        description: t('当前页降级渠道较多。先看池状态弹窗里的错误账号数、限流状态和可用模型。'),
+      },
+    ];
+
+    const top = candidates
+      .filter((item) => item.count > 0)
+      .sort((a, b) => b.count - a.count)[0];
+
+    if (top) {
+      return top;
+    }
+
+    if (externalPoolPageStats.available > 0) {
+      return {
+        kind: 'available',
+        filter: 'available',
+        title: t('可以继续做真实验证'),
+        description: t('当前页外部池以“可用”为主。建议先从一条渠道开始，按顺序验证拉模型、/v1/models、/v1/responses。'),
+      };
+    }
+
+    return {
+      kind: 'unknown',
+      filter: 'all',
+      title: t('先看池状态弹窗'),
+      description: t('当前页已有外部池渠道，但分布还不够明确。建议先打开池状态弹窗，再结合原始 JSON 和请求日志继续判断。'),
+    };
+  }, [externalPoolPageStats, t]);
+
   return {
     // Basic states
     channels,
+    filteredChannels,
     loading,
     searching,
     activePage,
@@ -1163,6 +1382,11 @@ export const useChannelsData = () => {
     enableTagMode,
     enableBatchDelete,
     statusFilter,
+    externalPoolIssueFirst,
+    externalPoolQuickFilter,
+    filteredChannelCount,
+    externalPoolPageStats,
+    externalPoolNextAction,
     compactMode,
     globalPassThroughEnabled,
 
@@ -1177,6 +1401,8 @@ export const useChannelsData = () => {
     setEditingTag,
     selectedChannels,
     setSelectedChannels,
+    setExternalPoolIssueFirst,
+    setExternalPoolQuickFilter,
     showBatchSetTag,
     setShowBatchSetTag,
     batchSetTagValue,

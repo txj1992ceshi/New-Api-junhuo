@@ -28,6 +28,7 @@ const (
 	ContextKeyChannelType                         ContextKey = "channel_type"
 	ContextKeyChannelSetting                      ContextKey = "channel_setting"
 	ContextKeyChannelOtherSetting                 ContextKey = "channel_other_setting"
+	ContextKeyChannelOtherInfo                    ContextKey = "channel_other_info"
 	ContextKeyChannelParamOverride                ContextKey = "param_override"
 	ContextKeyChannelHeaderOverride               ContextKey = "header_override"
 	ContextKeyChannelOrganization                 ContextKey = "channel_organization"

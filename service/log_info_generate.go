@@ -32,6 +32,70 @@ func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other
 	}
 }
 
+func externalPoolKindFromOtherInfo(otherInfo map[string]any) string {
+	if len(otherInfo) == 0 {
+		return ""
+	}
+	if enabled, ok := otherInfo["cursor_pool_proxy"].(bool); ok && enabled {
+		return ExternalPoolKindCursor
+	}
+	if enabled, ok := otherInfo["kiro_pool_proxy"].(bool); ok && enabled {
+		return ExternalPoolKindKiro
+	}
+	if enabled, ok := otherInfo["windsurf_pool_proxy"].(bool); ok && enabled {
+		return ExternalPoolKindWindsurf
+	}
+	return ""
+}
+
+func appendExternalPoolAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, adminInfo map[string]interface{}) {
+	if ctx == nil || adminInfo == nil {
+		return
+	}
+	otherInfo := common.GetContextKeyStringMap(ctx, constant.ContextKeyChannelOtherInfo)
+	kind := externalPoolKindFromOtherInfo(otherInfo)
+	if kind == "" {
+		return
+	}
+	adminInfo["external_pool_proxy"] = kind
+	adminInfo["external_pool_display_name"] = externalPoolDisplayName(kind)
+	if baseURL := common.GetContextKeyString(ctx, constant.ContextKeyChannelBaseUrl); baseURL != "" {
+		adminInfo["external_pool_base_url"] = baseURL
+	}
+	if channelName := common.GetContextKeyString(ctx, constant.ContextKeyChannelName); channelName != "" {
+		adminInfo["external_pool_channel_name"] = channelName
+	}
+	if relayInfo != nil {
+		if relayInfo.OriginModelName != "" {
+			adminInfo["external_pool_origin_model"] = relayInfo.OriginModelName
+		}
+		if relayInfo.UpstreamModelName != "" {
+			adminInfo["external_pool_upstream_model"] = relayInfo.UpstreamModelName
+		}
+	}
+	if statusPath, ok := otherInfo[kind+"_pool_status_path"].(string); ok && strings.TrimSpace(statusPath) != "" {
+		adminInfo["external_pool_status_path"] = strings.TrimSpace(statusPath)
+	}
+	if accountsPath, ok := otherInfo[kind+"_pool_accounts_path"].(string); ok && strings.TrimSpace(accountsPath) != "" {
+		adminInfo["external_pool_accounts_path"] = strings.TrimSpace(accountsPath)
+	}
+	if authorizeURL, ok := otherInfo[kind+"_pool_authorize_url"].(string); ok && strings.TrimSpace(authorizeURL) != "" {
+		adminInfo["external_pool_authorize_url"] = strings.TrimSpace(authorizeURL)
+	}
+	if authStartPath, ok := otherInfo[kind+"_pool_auth_start_path"].(string); ok && strings.TrimSpace(authStartPath) != "" {
+		adminInfo["external_pool_auth_start_path"] = strings.TrimSpace(authStartPath)
+	}
+	if authCompletePath, ok := otherInfo[kind+"_pool_auth_complete_path"].(string); ok && strings.TrimSpace(authCompletePath) != "" {
+		adminInfo["external_pool_auth_complete_path"] = strings.TrimSpace(authCompletePath)
+	}
+	if mode, ok := otherInfo[kind+"_pool_mode"].(string); ok && strings.TrimSpace(mode) != "" {
+		adminInfo["external_pool_mode"] = strings.TrimSpace(mode)
+	}
+	if strategy, ok := otherInfo[kind+"_pool_auth_strategy"].(string); ok && strings.TrimSpace(strategy) != "" {
+		adminInfo["external_pool_auth_strategy"] = strings.TrimSpace(strategy)
+	}
+}
+
 func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, modelRatio, groupRatio, completionRatio float64,
 	cacheTokens int, cacheRatio float64, modelPrice float64, userGroupRatio float64) map[string]interface{} {
 	other := make(map[string]interface{})
@@ -183,6 +247,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	}
 
 	AppendChannelAffinityAdminInfo(ctx, adminInfo)
+	appendExternalPoolAdminInfo(ctx, relayInfo, adminInfo)
 
 	other["admin_info"] = adminInfo
 	appendRequestPath(ctx, relayInfo, other)

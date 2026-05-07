@@ -64,6 +64,27 @@
 - 保持原普通 OpenAI 上游 key 语义
 - 对需要统一切换的模型，优先级高于 `codex-e2e-temp` 与 `antigravity-openclaw`
 
+### 3.4 第一阶段外部池代理渠道
+
+若本轮要把 `Cursor / Windsurf / Kiro` 先作为灰度外部池代理接入，建议遵循：
+
+1. 每条都新建独立 OpenAI-compatible 渠道
+2. `type` 先保持普通 OpenAI-compatible，不新增特殊 channel type
+3. 在 `other_info` 中分别打开：
+   - `cursor_pool_proxy=true`
+   - `windsurf_pool_proxy=true`
+   - `kiro_pool_proxy=true`
+4. 每条渠道只先暴露少量模型
+5. `priority` 先低于现有主链
+
+建议命名：
+
+- `cursor-pool-proxy`
+- `windsurf-pool-proxy`
+- `kiro-pool-proxy`
+
+这样后台可直接查看帐号/池状态，但不会一上来抢走主流量。
+
 ## 4. Nginx 切换
 
 香港机 Nginx 需要从：
@@ -88,4 +109,8 @@
    - 所有客户端统一优先命中 `caowo`
    - `caowo` 不可用时回退到本机 `codex-e2e-temp`
    - `codex-e2e-temp` 不可用时回退到 `antigravity-openclaw`
-5. 最后再切 `junhuo.icu` 的 Nginx 主入口
+5. 分别验证 `cursor-pool-proxy / windsurf-pool-proxy / kiro-pool-proxy`：
+   - `/v1/models`
+   - `/v1/responses`
+   - 后台“帐号/池状态”是否能区分未连通 / 空池 / 有可用账号
+6. 最后再切 `junhuo.icu` 的 Nginx 主入口

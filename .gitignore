@@ -62,3 +62,16 @@ new-api-*.tar.gz.sha256
 
 # Local packaging dependencies
 winpack_tools/node_modules/
+
+# Local pool service dependencies
+local-pool-service/node_modules/
+
+# Local runtime outputs
+runtime/local-pools/*.env
+runtime/local-pools/*.pid
+runtime/local-pools/*.out
+runtime/local-pools/*.err
+
+# Local helper binaries and staging
+.deploy-bin/
+CursorPro421_unpack/

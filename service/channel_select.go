@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -88,6 +89,9 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
 	relayMode := relayconstant.Path2RelayMode(param.Ctx.Request.URL.Path)
 	channelPredicate := func(ch *model.Channel) bool {
+		if IsExternalPoolChannelCoolingDown(ch, time.Now()) {
+			return false
+		}
 		return ChannelSupportsRequestedModelForRelay(ch, relayMode, param.ModelName)
 	}
 
