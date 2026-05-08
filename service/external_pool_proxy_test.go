@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/glebarez/sqlite"
+	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
 
@@ -264,6 +265,33 @@ func TestShouldTryNextInferenceModelOnTransientErrors(t *testing.T) {
 			t.Fatalf("expected transient error to try next model: %s", input)
 		}
 	}
+}
+
+func TestStartExternalPoolAuthFallsBackForLocalStateDirect404(t *testing.T) {
+	db := setupExternalPoolProxyTestDB(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	channel := &model.Channel{
+		Name:      "kiro-pool-proxy",
+		Type:      1,
+		Key:       "demo-kiro-key",
+		BaseURL:   &server.URL,
+		OtherInfo: `{"kiro_pool_proxy":true,"kiro_pool_auth_strategy":"local_state_direct","kiro_pool_authorize_hint":"读取本机 Kiro 登录态并导入当前渠道池。"}`,
+	}
+	require.NoError(t, db.Create(channel).Error)
+
+	result, err := startExternalPoolAuth(context.Background(), channel.Id, ExternalPoolKindKiro, "")
+	require.NoError(t, err)
+	payload, ok := result.(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, true, payload["success"])
+	data, ok := payload["data"].(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, "local_state_direct", data["auth_strategy"])
+	require.Equal(t, "complete_auth", data["next_action"])
 }
 
 func TestGetExternalPoolSummaryIncludesPoolState(t *testing.T) {

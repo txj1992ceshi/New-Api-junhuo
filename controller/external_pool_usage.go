@@ -164,10 +164,6 @@ func CompleteWindsurfPoolAuth(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if strings.TrimSpace(req.Input) == "" {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "missing input"})
-		return
-	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 	data, err := service.CompleteWindsurfPoolAuth(ctx, channelID, req.Input)
@@ -350,10 +346,6 @@ func CompleteKiroPoolAuth(c *gin.Context) {
 	req := externalPoolAuthCompleteRequest{}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		common.ApiError(c, err)
-		return
-	}
-	if strings.TrimSpace(req.Input) == "" {
-		c.JSON(http.StatusOK, gin.H{"success": false, "message": "missing input"})
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)

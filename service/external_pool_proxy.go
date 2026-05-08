@@ -1291,10 +1291,35 @@ func startExternalPoolAuth(ctx context.Context, channelID int, kind string, auth
 	}
 	body, _, err := proxyExternalPoolRequest(ctx, channel, proxy, http.MethodPost, proxy.AuthStartPath, payload)
 	if err != nil {
+		if shouldFallbackExternalPoolAuthStart(err, authStrategy) {
+			return normalizeExternalPoolActionPayload(map[string]interface{}{
+				"success": true,
+				"message": fmt.Sprintf("%s local state scan is ready", strings.ToLower(proxy.DisplayName)),
+				"data": map[string]interface{}{
+					"auth_strategy":   authStrategy,
+					"next_action":     "complete_auth",
+					"authorize_hint":  proxy.AuthorizeHint,
+					"required_fields": []string{},
+				},
+			}, "auth start requested"), nil
+		}
 		return nil, err
 	}
 	raw := parseExternalPoolResponseBody(body)
 	return normalizeExternalPoolActionPayload(raw, "auth start requested"), nil
+}
+
+func shouldFallbackExternalPoolAuthStart(err error, authStrategy string) bool {
+	if err == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(authStrategy)) {
+	case "local_state_direct", "provider_bridge":
+	default:
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "status 404")
 }
 
 func completeExternalPoolAuth(ctx context.Context, channelID int, kind string, input string, authStrategyOverride string) (interface{}, error) {

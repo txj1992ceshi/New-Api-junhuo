@@ -124,3 +124,61 @@ func TestCompleteCursorPoolAuthAllowsMissingInput(t *testing.T) {
 	require.Equal(t, false, payload["success"])
 	require.NotEqual(t, "missing input", payload["message"])
 }
+
+func TestCompleteKiroPoolAuthAllowsMissingInput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupExternalPoolControllerTestDB(t)
+	baseURL := "http://127.0.0.1:65534"
+	channel := &model.Channel{
+		Name:      "kiro-pool-proxy",
+		Type:      1,
+		Key:       "demo-kiro-key",
+		BaseURL:   &baseURL,
+		OtherInfo: `{"kiro_pool_proxy":true,"kiro_pool_auth_strategy":"local_state_direct"}`,
+	}
+	require.NoError(t, db.Create(channel).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.Id)}}
+	ctx.Request = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/channel/%d/kiro/auth/complete", channel.Id), bytes.NewBufferString(`{}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	CompleteKiroPoolAuth(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var payload map[string]interface{}
+	err := common.Unmarshal(recorder.Body.Bytes(), &payload)
+	require.NoError(t, err)
+	require.Equal(t, false, payload["success"])
+	require.NotEqual(t, "missing input", payload["message"])
+}
+
+func TestCompleteWindsurfPoolAuthAllowsMissingInput(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := setupExternalPoolControllerTestDB(t)
+	baseURL := "http://127.0.0.1:65534"
+	channel := &model.Channel{
+		Name:      "windsurf-pool-proxy",
+		Type:      1,
+		Key:       "demo-windsurf-key",
+		BaseURL:   &baseURL,
+		OtherInfo: `{"windsurf_pool_proxy":true,"windsurf_pool_auth_strategy":"local_state_direct"}`,
+	}
+	require.NoError(t, db.Create(channel).Error)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.Id)}}
+	ctx.Request = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/channel/%d/windsurf/auth/complete", channel.Id), bytes.NewBufferString(`{}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	CompleteWindsurfPoolAuth(ctx)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var payload map[string]interface{}
+	err := common.Unmarshal(recorder.Body.Bytes(), &payload)
+	require.NoError(t, err)
+	require.Equal(t, false, payload["success"])
+	require.NotEqual(t, "missing input", payload["message"])
+}

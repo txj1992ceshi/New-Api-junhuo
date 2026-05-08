@@ -87,7 +87,13 @@ const getConfiguredAuthorizeUrl = (record, kind) => {
   ).trim();
 };
 
-const getFriendlyPoolErrorMessage = (error, fallback, poolBaseUrl, providerLabel) => {
+const getFriendlyPoolErrorMessage = (
+  error,
+  fallback,
+  poolBaseUrl,
+  providerLabel,
+  authStrategy = '',
+) => {
   const rawMessage = String(error?.message || fallback || '').trim();
   const lower = rawMessage.toLowerCase();
   if (
@@ -101,6 +107,9 @@ const getFriendlyPoolErrorMessage = (error, fallback, poolBaseUrl, providerLabel
     return `${providerLabel} pool service 鉴权失败，请检查渠道密钥或上游授权状态`;
   }
   if (lower.includes('404')) {
+    if (authStrategy === 'local_state_direct' || authStrategy === 'provider_bridge') {
+      return `${providerLabel} 当前 pool service 还没有实现“读取登录态/本地配置入池”接口，请检查 /auth/start 或 /auth/complete 是否真的由该池服务提供`;
+    }
     return `${providerLabel} pool service 接口路径不存在，请检查 /auth/start 或 /auth/complete 配置`;
   }
   return rawMessage || fallback;
@@ -166,6 +175,7 @@ const ExternalPoolAuthModalDialog = ({
           t('加载授权视图失败'),
           poolBaseUrl,
           providerMeta.label,
+          effectiveAuthStrategy,
         ),
       );
     }
@@ -219,6 +229,7 @@ const ExternalPoolAuthModalDialog = ({
         t('启动授权失败'),
         poolBaseUrl,
         providerMeta.label,
+        effectiveAuthStrategy,
       );
       setActionError(message);
       showError(message);
@@ -258,6 +269,7 @@ const ExternalPoolAuthModalDialog = ({
         t('授权失败'),
         poolBaseUrl,
         providerMeta.label,
+        effectiveAuthStrategy,
       );
       setActionError(message);
       showError(message);
