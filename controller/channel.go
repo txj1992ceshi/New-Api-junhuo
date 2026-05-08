@@ -1093,6 +1093,20 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 
+	// 编辑模式下前端不会回填已保存的密钥；先补回旧 key，再做统一校验，
+	// 避免 external-pool / OAuth 类渠道因为“未重新输入密钥”被误判为 missing key。
+	originChannel, err := model.GetChannelById(channel.Id, true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+	if strings.TrimSpace(channel.Key) == "" {
+		channel.Key = originChannel.Key
+	}
+
 	// 使用统一的校验函数
 	if err := validateChannel(&channel.Channel, false); err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -1102,15 +1116,6 @@ func UpdateChannel(c *gin.Context) {
 		return
 	}
 	// Preserve existing ChannelInfo to ensure multi-key channels keep correct state even if the client does not send ChannelInfo in the request.
-	originChannel, err := model.GetChannelById(channel.Id, true)
-	if err != nil {
-		c.JSON(http.StatusOK, gin.H{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-
 	// Always copy the original ChannelInfo so that fields like IsMultiKey and MultiKeySize are retained.
 	channel.ChannelInfo = originChannel.ChannelInfo
 
