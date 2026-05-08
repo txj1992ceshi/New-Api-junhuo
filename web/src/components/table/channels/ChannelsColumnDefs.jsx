@@ -368,6 +368,8 @@ const renderMultiKeyStatus = (status, keySize, record, t, enabledKeySize = keySi
             : 'grey'
         : 'grey';
 
+    const showDiagnosisTag = !(diagnosis === 'auth_only' && authCapable);
+
     const content = (
       <Space spacing={4}>
         <Tag color={getStatusColor(status)} shape='circle'>
@@ -380,9 +382,11 @@ const renderMultiKeyStatus = (status, keySize, record, t, enabledKeySize = keySi
         <Tag color={availabilityColor} type='light' shape='circle'>
           {availabilityLabel}
         </Tag>
-        <Tag color={diagnosisColor} type='light' shape='circle'>
-          {diagnosisLabel}
-        </Tag>
+        {showDiagnosisTag ? (
+          <Tag color={diagnosisColor} type='light' shape='circle'>
+            {diagnosisLabel}
+          </Tag>
+        ) : null}
         <Tag color={poolStateColor} type='light' shape='circle'>
           {poolStateLabel}
         </Tag>
