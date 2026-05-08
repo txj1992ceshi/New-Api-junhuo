@@ -1174,6 +1174,9 @@ function extractTextFromInput(input) {
         if (typeof item === 'string') return item;
         if (!item || typeof item !== 'object') return '';
         if (typeof item.text === 'string') return item.text;
+        if (typeof item.input_text === 'string') return item.input_text;
+        if (typeof item.output_text === 'string') return item.output_text;
+        if (typeof item.content === 'string') return item.content;
         if (Array.isArray(item.content)) return extractTextFromInput(item.content);
         return '';
       })
@@ -1185,6 +1188,7 @@ function extractTextFromInput(input) {
     if (typeof input.text === 'string') return input.text.trim();
     if (typeof input.input_text === 'string') return input.input_text.trim();
     if (typeof input.output_text === 'string') return input.output_text.trim();
+    if (typeof input.content === 'string') return input.content.trim();
     if (Array.isArray(input.content)) return extractTextFromInput(input.content);
   }
   return '';
