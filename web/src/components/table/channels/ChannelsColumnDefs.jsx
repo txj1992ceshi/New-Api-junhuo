@@ -347,14 +347,26 @@ const renderMultiKeyStatus = (status, keySize, record, t, enabledKeySize = keySi
     const authCapable = summary.auth_capable === true;
     const inferenceCapable = summary.inference_capable === true;
     const inferenceProbed = summary.inference_probed === true;
-    const capabilityLabel = authCapable
-      ? inferenceCapable
-        ? t('已认证，可推理')
-        : inferenceProbed
-          ? t('已认证，不可推理')
-          : t('已认证，未探测')
-      : t('未认证');
-    const capabilityColor = authCapable ? (inferenceCapable ? 'green' : inferenceProbed ? 'orange' : 'grey') : 'grey';
+    const hasUpstreamFetchError =
+      poolState === 'upstream_error' && Boolean(summary.upstream_error);
+    const capabilityLabel = hasUpstreamFetchError
+      ? t('状态未知')
+      : authCapable
+        ? inferenceCapable
+          ? t('已认证，可推理')
+          : inferenceProbed
+            ? t('已认证，不可推理')
+            : t('已认证，未探测')
+        : t('未认证');
+    const capabilityColor = hasUpstreamFetchError
+      ? 'grey'
+      : authCapable
+        ? inferenceCapable
+          ? 'green'
+          : inferenceProbed
+            ? 'orange'
+            : 'grey'
+        : 'grey';
 
     const content = (
       <Space spacing={4}>
