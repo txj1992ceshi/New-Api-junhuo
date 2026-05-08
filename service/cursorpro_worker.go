@@ -23,10 +23,15 @@ const (
 	defaultCursorProControlURL  = "http://127.0.0.1:18765"
 	cursorProResultCodeNoYield  = "register_no_yield"
 	cursorProResultCodeControl  = "control_unreachable"
+	cursorProResultCodeDisabled = "register_disabled"
 	cursorProBlockReasonNoYield = "recent_no_yield"
 	cursorProManagedChannelID   = 2
 	cursorProManagedPoolCap     = 100
 )
+
+func cursorProRegisterAutomationEnabled() bool {
+	return false
+}
 
 type cursorProExportFile struct {
 	Filename   string `json:"filename"`
@@ -550,73 +555,16 @@ func evaluateCursorProTriggerCooldownWithMode(
 }
 
 func TriggerCursorProReplacement(ctx context.Context, channelID int, reason string) (*CursorProReplacementResult, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	state := cursorProStateForChannel(channelID)
-	now := time.Now()
-	tokenStatus, tokenStatusErr := readCursorProTokenStatus(ctx)
-	registerStatus, registerStatusErr := readCursorProRegisterStatus(ctx)
-	if registerStatusErr != nil && tokenStatusErr != nil && state != nil {
-		state.LastResultStatus = "failed"
-		state.LastErrorCode = cursorProResultCodeControl
-		state.LastErrorMessage = "CursorPro control service is unreachable."
+	if state != nil {
+		state.LastResultStatus = "disabled"
+		state.LastErrorCode = cursorProResultCodeDisabled
+		state.LastErrorMessage = "External CursorPro register automation is disabled."
 	}
-	health, recentNoAvailable, recentHotPath := loadCursorProCooldownContext(channelID, now)
-	mode := cursorProReplacementModeFromChannelID(channelID)
-	updateCursorProSourceQuietSince(state, tokenStatus, now)
-	cooldownDecision := evaluateCursorProTriggerCooldownWithMode(state, registerStatus, tokenStatus, health, recentNoAvailable, recentHotPath, now, mode)
-	if !cooldownDecision.Allowed {
-		return &CursorProReplacementResult{
-			Triggered: false,
-			Reason:    reason,
-			Status:    cooldownDecision.BlockReason,
-		}, nil
-	}
-	if cursorProSourceRecentlyUpdated(tokenStatus, now) {
-		return &CursorProReplacementResult{
-			Triggered: false,
-			Reason:    reason,
-			Status:    "trigger_skipped_recent_source_update",
-		}, nil
-	}
-
-	triggerPayload := map[string]any{
-		"channel_id": channelID,
-		"reason":     reason,
-	}
-	body, _ := common.Marshal(triggerPayload)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cursorProControlBaseURL()+"/v1/register/trigger", bytes.NewBuffer(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusConflict {
-		return nil, fmt.Errorf("cursorpro register trigger failed: status=%d body=%s", resp.StatusCode, strings.TrimSpace(string(respBody)))
-	}
-	var statusPayload cursorProRegisterStatus
-	_ = common.Unmarshal(respBody, &statusPayload)
-	exportSnapshot := readCursorProExportSnapshot()
-	state.LastTriggerAt = now
-	state.LastTriggerReason = reason
-	state.RecentTriggerTimes = append(state.RecentTriggerTimes, now)
-	if statusPayload.TaskID != "" {
-		state.LastTaskID = statusPayload.TaskID
-	}
-	state.LastExportCount = exportSnapshot.Count
-	state.LastExportName = exportSnapshot.LatestName
-	state.LastExportMtime = exportSnapshot.LatestMtime
 	return &CursorProReplacementResult{
-		Triggered: resp.StatusCode == http.StatusAccepted,
+		Triggered: false,
 		Reason:    reason,
-		Status:    map[bool]string{true: "triggered", false: "already_running"}[resp.StatusCode == http.StatusAccepted],
+		Status:    cursorProResultCodeDisabled,
 	}, nil
 }
 

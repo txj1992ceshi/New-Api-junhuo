@@ -367,6 +367,12 @@ func diagnoseCursorProSync(tokenStatus *cursorProTokenStatus, state *cursorProTr
 }
 
 func deriveTriggerResult(state *cursorProTriggerState, registerStatus *cursorProRegisterStatus, blockReason string) string {
+	if state != nil && state.LastErrorCode == cursorProResultCodeDisabled {
+		return cursorProResultCodeDisabled
+	}
+	if registerStatus != nil && registerStatus.ErrorCode == cursorProResultCodeDisabled {
+		return cursorProResultCodeDisabled
+	}
 	if blockReason == cursorProBlockReasonNoYield {
 		return "trigger_no_yield_cooldown"
 	}
@@ -400,6 +406,8 @@ func deriveRecoveryResult(state *cursorProTriggerState, registerStatus *cursorPr
 		state = &cursorProTriggerState{}
 	}
 	switch {
+	case state.LastErrorCode == cursorProResultCodeDisabled:
+		return cursorProResultCodeDisabled
 	case state.LastProbeResult == "probe_succeeded":
 		return "probe_succeeded"
 	case state.LastImportResult == "imported_to_channel" && state.LastProbeResult == "probe_pending":
@@ -474,6 +482,10 @@ func GetCursorProReplacementStatus(ctx context.Context, channelID int, now time.
 	recentProbeSuccess := RecentCodexProbeSuccessCount(channelID, now)
 	recentProbeFail := RecentCodexProbeFailCount(channelID, now)
 	triggerRecommended, triggerReason := ShouldTriggerCursorProReplacement(channel, health, now)
+	if !cursorProRegisterAutomationEnabled() {
+		triggerRecommended = false
+		triggerReason = cursorProResultCodeDisabled
+	}
 
 	var (
 		registerStatus    *cursorProRegisterStatus

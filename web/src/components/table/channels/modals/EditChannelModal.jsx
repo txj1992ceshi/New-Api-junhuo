@@ -84,6 +84,7 @@ import {
   getChannelAdminStatusActionText,
   getChannelAdminStatusKind,
   getExternalPoolAuthConfig,
+  isCodexPoolProxy,
   isCursorPoolProxy,
   isKiroPoolProxy,
   isRemoteCodexPoolProxy,
@@ -103,7 +104,7 @@ import {
 } from '@douyinfe/semi-icons';
 
 const { Text, Title } = Typography;
-const poolProxyKinds = ['cursor', 'kiro', 'windsurf'];
+const poolProxyKinds = ['codex', 'cursor', 'kiro', 'windsurf'];
 
 const poolProxyToggleFields = poolProxyKinds.map((kind) => `${kind}_pool_proxy`);
 const poolProxyDefaultValues = {
@@ -172,13 +173,18 @@ const applyPoolProxyOtherInfo = (baseOtherInfo, localInputs) => {
 const applyPoolProxyDefaults = (kind, baseInputs) => {
   const nextInputs = { ...baseInputs };
   Object.entries(poolProxyDefaultValues).forEach(([suffix, defaultValue]) => {
-    if (suffix === 'auth_strategy' && kind !== 'cursor') {
-      return;
-    }
     const field = `${kind}_pool_${suffix}`;
     const currentValue = nextInputs?.[field];
+    const resolvedDefaultValue =
+      suffix === 'auth_strategy'
+        ? kind === 'codex'
+          ? 'provider_bridge'
+          : defaultValue
+        : suffix === 'inference_mode' && kind === 'codex'
+          ? 'dual'
+          : defaultValue;
     if (typeof currentValue !== 'string' || currentValue.trim() === '') {
-      nextInputs[field] = defaultValue;
+      nextInputs[field] = resolvedDefaultValue;
     }
   });
   return nextInputs;
@@ -366,6 +372,20 @@ const EditChannelModal = (props) => {
     weight: 0,
     tag: '',
     multi_key_mode: 'random',
+    codex_pool_proxy: false,
+    codex_pool_status_path: '',
+    codex_pool_accounts_path: '',
+    codex_pool_dashboard_path: '',
+    codex_pool_authorize_url: '',
+    codex_pool_authorize_hint: '',
+    codex_pool_auth_start_path: '',
+    codex_pool_auth_complete_path: '',
+    codex_pool_auth_strategy: '',
+    codex_pool_auth_header: '',
+    codex_pool_auth_scheme: '',
+    codex_pool_tunnel_hint: '',
+    codex_pool_inference_mode: '',
+    codex_pool_probe_inference: false,
     cursor_pool_proxy: false,
     cursor_pool_status_path: '',
     cursor_pool_accounts_path: '',
@@ -1295,6 +1315,20 @@ const EditChannelModal = (props) => {
           // ignore parse error
         }
       }
+      data.codex_pool_proxy = parsedOtherInfo?.codex_pool_proxy === true;
+      data.codex_pool_status_path = parsedOtherInfo?.codex_pool_status_path || '';
+      data.codex_pool_accounts_path = parsedOtherInfo?.codex_pool_accounts_path || '';
+      data.codex_pool_dashboard_path = parsedOtherInfo?.codex_pool_dashboard_path || '';
+      data.codex_pool_authorize_url = parsedOtherInfo?.codex_pool_authorize_url || '';
+      data.codex_pool_authorize_hint = parsedOtherInfo?.codex_pool_authorize_hint || '';
+      data.codex_pool_auth_start_path = parsedOtherInfo?.codex_pool_auth_start_path || '';
+      data.codex_pool_auth_complete_path = parsedOtherInfo?.codex_pool_auth_complete_path || '';
+      data.codex_pool_auth_strategy = parsedOtherInfo?.codex_pool_auth_strategy || '';
+      data.codex_pool_auth_header = parsedOtherInfo?.codex_pool_auth_header || '';
+      data.codex_pool_auth_scheme = parsedOtherInfo?.codex_pool_auth_scheme || '';
+      data.codex_pool_tunnel_hint = parsedOtherInfo?.codex_pool_tunnel_hint || '';
+      data.codex_pool_inference_mode = parsedOtherInfo?.codex_pool_inference_mode || '';
+      data.codex_pool_probe_inference = parsedOtherInfo?.codex_pool_probe_inference === true;
       data.cursor_pool_proxy = parsedOtherInfo?.cursor_pool_proxy === true;
       data.cursor_pool_status_path = parsedOtherInfo?.cursor_pool_status_path || '';
       data.cursor_pool_accounts_path = parsedOtherInfo?.cursor_pool_accounts_path || '';
@@ -1643,6 +1677,7 @@ const EditChannelModal = (props) => {
     if (!isEdit || !channelId) return;
     let otherInfo = inputs.other_info;
     if (
+      inputs.codex_pool_proxy === true ||
       inputs.cursor_pool_proxy === true ||
       inputs.kiro_pool_proxy === true ||
       inputs.windsurf_pool_proxy === true
@@ -1671,6 +1706,21 @@ const EditChannelModal = (props) => {
     if (!record) return;
     openExternalPoolAuthModal({
       record,
+      onCompleted: () => {
+        handleOpenCodexStatus();
+      },
+    });
+  };
+
+  const handleOpenCodexProviderBridgeImport = () => {
+    const record = buildEditableAdminRecord();
+    if (!record) return;
+    openExternalPoolAuthModal({
+      record,
+      forcedAuthStrategy: 'provider_bridge',
+      modeLabel: t('Codex 读取 Provider 配置'),
+      primaryActionLabel: t('开始读取 Provider 配置'),
+      completeActionLabel: t('确认导入 Provider 配置'),
       onCompleted: () => {
         handleOpenCodexStatus();
       },
@@ -1747,7 +1797,12 @@ const EditChannelModal = (props) => {
       else showError(t('复制失败'));
     };
 
-    if (adminStatusKind === 'windsurf' || adminStatusKind === 'cursor' || adminStatusKind === 'kiro') {
+    if (
+      adminStatusKind === 'codex_pool' ||
+      adminStatusKind === 'windsurf' ||
+      adminStatusKind === 'cursor' ||
+      adminStatusKind === 'kiro'
+    ) {
       openExternalPoolModal({ t, record, onCopy });
       return;
     }
@@ -2472,6 +2527,20 @@ const EditChannelModal = (props) => {
     delete localInputs.upstream_model_update_ignored_models;
     delete localInputs.responses_model_mapping;
     delete localInputs.responses_compact_model_mapping;
+    delete localInputs.codex_pool_proxy;
+    delete localInputs.codex_pool_status_path;
+    delete localInputs.codex_pool_accounts_path;
+    delete localInputs.codex_pool_dashboard_path;
+    delete localInputs.codex_pool_authorize_url;
+    delete localInputs.codex_pool_authorize_hint;
+    delete localInputs.codex_pool_auth_start_path;
+    delete localInputs.codex_pool_auth_complete_path;
+    delete localInputs.codex_pool_auth_strategy;
+    delete localInputs.codex_pool_auth_header;
+    delete localInputs.codex_pool_auth_scheme;
+    delete localInputs.codex_pool_tunnel_hint;
+    delete localInputs.codex_pool_inference_mode;
+    delete localInputs.codex_pool_probe_inference;
     delete localInputs.cursor_pool_proxy;
     delete localInputs.cursor_pool_status_path;
     delete localInputs.cursor_pool_accounts_path;
@@ -2484,6 +2553,8 @@ const EditChannelModal = (props) => {
     delete localInputs.cursor_pool_auth_header;
     delete localInputs.cursor_pool_auth_scheme;
     delete localInputs.cursor_pool_tunnel_hint;
+    delete localInputs.cursor_pool_inference_mode;
+    delete localInputs.cursor_pool_probe_inference;
     delete localInputs.kiro_pool_proxy;
     delete localInputs.kiro_pool_status_path;
     delete localInputs.kiro_pool_accounts_path;
@@ -2496,6 +2567,8 @@ const EditChannelModal = (props) => {
     delete localInputs.kiro_pool_auth_header;
     delete localInputs.kiro_pool_auth_scheme;
     delete localInputs.kiro_pool_tunnel_hint;
+    delete localInputs.kiro_pool_inference_mode;
+    delete localInputs.kiro_pool_probe_inference;
     delete localInputs.windsurf_pool_proxy;
     delete localInputs.windsurf_pool_status_path;
     delete localInputs.windsurf_pool_accounts_path;
@@ -2508,6 +2581,8 @@ const EditChannelModal = (props) => {
     delete localInputs.windsurf_pool_auth_header;
     delete localInputs.windsurf_pool_auth_scheme;
     delete localInputs.windsurf_pool_tunnel_hint;
+    delete localInputs.windsurf_pool_inference_mode;
+    delete localInputs.windsurf_pool_probe_inference;
 
     let res;
     localInputs.auto_ban = localInputs.auto_ban ? 1 : 0;
@@ -2766,6 +2841,17 @@ const EditChannelModal = (props) => {
 
   const currentExternalPoolKind = (() => {
     if (!isEdit) return '';
+    if (
+      inputs.codex_pool_proxy === true ||
+      isCodexPoolProxy({
+        id: channelId,
+        name: inputs.name,
+        base_url: inputs.base_url,
+        other_info: inputs.other_info,
+      })
+    ) {
+      return 'codex';
+    }
     if (isCursorProxyEdit) return 'cursor';
     if (isKiroProxyEdit) return 'kiro';
     if (isWindsurfProxyEdit) return 'windsurf';
@@ -2774,6 +2860,13 @@ const EditChannelModal = (props) => {
 
   const externalPoolActionMeta = (() => {
     if (!currentExternalPoolKind) return null;
+    if (currentExternalPoolKind === 'codex') {
+      return {
+        primaryLabel: t('授权登录'),
+        secondaryLabel: t('读取 Provider 配置'),
+        hint: t('Codex 这条渠道当前走 provider bridge：会读取本机 Codex 当前 custom provider 配置并入池。'),
+      };
+    }
     if (currentExternalPoolKind === 'cursor') {
       return {
         primaryLabel: t('授权登录'),
@@ -2810,12 +2903,16 @@ const EditChannelModal = (props) => {
         statusLabel={statusActionText?.label || t('状态')}
         dashboardLabel={t('打开 Dashboard')}
         onAuthorize={
-          currentExternalPoolKind === 'cursor'
+          currentExternalPoolKind === 'codex'
+            ? handleOpenCodexProviderBridgeImport
+            : currentExternalPoolKind === 'cursor'
             ? handleOpenCursorOAuthAdapterAuth
             : handleOpenExternalPoolAuth
         }
         onSecondary={
-          currentExternalPoolKind === 'cursor'
+          currentExternalPoolKind === 'codex'
+            ? handleOpenCodexProviderBridgeImport
+            : currentExternalPoolKind === 'cursor'
             ? handleOpenCursorLocalStateImport
             : currentExternalPoolKind === 'windsurf'
               ? handleOpenWindsurfLocalStateImport
@@ -2841,21 +2938,25 @@ const EditChannelModal = (props) => {
     return (
       <div className='rounded border border-solid border-semi-color-border p-3'>
         <div className='mb-2 text-sm font-medium'>{title}</div>
-        {(kind === 'cursor' || kind === 'windsurf' || kind === 'kiro') && (
+        {(kind === 'codex' || kind === 'cursor' || kind === 'windsurf' || kind === 'kiro') && (
           <Form.Select
             field={authStrategyField}
             label={t('授权策略')}
             initValue={inputs[authStrategyField]}
             onChange={(value) => handleInputChange(authStrategyField, value)}
             optionList={[
-              { label: 'local_state_direct', value: 'local_state_direct' },
+              ...(kind === 'codex'
+                ? [{ label: 'provider_bridge', value: 'provider_bridge' }]
+                : [{ label: 'local_state_direct', value: 'local_state_direct' }]),
               { label: 'manual_token_import', value: 'manual_token_import' },
               ...(kind === 'cursor'
                 ? [{ label: 'oauth_callback', value: 'oauth_callback' }]
                 : []),
             ]}
             extraText={t(
-              kind === 'cursor'
+              kind === 'codex'
+                ? 'provider_bridge 会读取本机 Codex 当前 provider 配置入池；manual_token_import 则走手工凭据导入'
+                : kind === 'cursor'
                 ? 'local_state_direct 会读取本机 Cursor 登录态入池；oauth_callback 走回调适配导入；manual_token_import 则走手工凭据导入'
                 : kind === 'windsurf'
                   ? 'local_state_direct 会读取本机 Windsurf 登录态入池；manual_token_import 则走手工凭据导入'
@@ -4681,6 +4782,22 @@ const EditChannelModal = (props) => {
 
                           {inputs.type === 1 && (
                             <Form.Switch
+                              field='codex_pool_proxy'
+                              label={t('Codex 池代理')}
+                              checkedText={t('开')}
+                              uncheckedText={t('关')}
+                              initValue={inputs.codex_pool_proxy}
+                              onChange={(value) =>
+                                handleInputChange('codex_pool_proxy', value)
+                              }
+                              extraText={t(
+                                '开启后，此渠道会显示 Codex 帐号/池状态面板，并通过当前 API 地址和密钥读取池信息',
+                              )}
+                            />
+                          )}
+
+                          {inputs.type === 1 && (
+                            <Form.Switch
                               field='cursor_pool_proxy'
                               label={t('Cursor 池代理')}
                               checkedText={t('开')}
@@ -4726,6 +4843,12 @@ const EditChannelModal = (props) => {
                               )}
                             />
                           )}
+
+                          {inputs.type === 1 && inputs.codex_pool_proxy === true &&
+                            renderExternalPoolAdvancedConfig('codex', t('Codex 池高级配置'), {
+                              authorizePlaceholder: 'https://example.com/codex/login',
+                              tunnelHintPlaceholder: t('例如：先确认 Codex provider bridge 服务在线，再访问 Dashboard'),
+                            })}
 
                           {inputs.type === 1 && inputs.cursor_pool_proxy === true &&
                             renderExternalPoolAdvancedConfig('cursor', t('Cursor 池高级配置'), {

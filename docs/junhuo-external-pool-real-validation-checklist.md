@@ -1,6 +1,6 @@
 # `junhuo` 外部池真实联调清单
 
-本文用于 `Cursor / Windsurf / Kiro` 三类外部池代理渠道进入真实联调前的准备检查。
+本文用于 `Cursor / Windsurf / Kiro / Codex` 四类外部池代理渠道进入真实联调前的准备检查。
 
 可重复执行的本地验证脚本：
 
@@ -32,6 +32,7 @@ CURSOR_SMOKE_MODEL=cursor-default KIRO_SMOKE_MODEL=kiro-sonnet bash scripts/vali
 
 - `Cursor`：`cursor-default`
 - `Kiro`：`kiro-sonnet`
+- `Codex`：`codex-default` / `codex-gpt54`
 - `Windsurf`：暂不固定正式别名
 
 ## 1. 渠道配置前检查
@@ -118,6 +119,13 @@ Cursor 本地态直连专项验收：
 9. 保持 Cursor 客户端已登录，但使 `cursor-agent status` 处于未登录
 10. 再次验证 `/v1/responses`，确认仍可成功（`*_pool_mode=local_state_direct`）
 11. 切换回 `cli` 模式后复测，确认可按预期回滚
+
+Codex provider bridge 专项验收：
+
+9. 保持 `~/.codex/config.toml` 与 `~/.codex/auth.json` 可读
+10. 点击 `读取 Provider 配置` 或调用 `/auth/complete`，确认 `/auth/accounts` 出现 `source=local_codex_provider_config`
+11. 优先验证 `/v1/responses`，若 `/v1/chat/completions` 命中上游限流或空内容兜底，则仍应看到标准化后的 assistant 文本
+12. 若返回 `Rate limit exceeded`，先视为“上游已连通但当前额度受限”，不要误判为接入失败
 
 ## 5. 日志关注点
 

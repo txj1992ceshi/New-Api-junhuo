@@ -38,3 +38,23 @@ func TestDeriveRecoveryResultReportsControlUnreachable(t *testing.T) {
 		t.Fatalf("unexpected recovery result: %s", result)
 	}
 }
+
+func TestDeriveTriggerResultReportsRegisterDisabled(t *testing.T) {
+	result := deriveTriggerResult(&cursorProTriggerState{
+		LastResultStatus: "disabled",
+		LastErrorCode:    cursorProResultCodeDisabled,
+	}, nil, "")
+	if result != cursorProResultCodeDisabled {
+		t.Fatalf("unexpected trigger result: %s", result)
+	}
+}
+
+func TestDeriveRecoveryResultReportsRegisterDisabled(t *testing.T) {
+	result := deriveRecoveryResult(&cursorProTriggerState{
+		LastResultStatus: "disabled",
+		LastErrorCode:    cursorProResultCodeDisabled,
+	}, nil, nil, nil)
+	if result != cursorProResultCodeDisabled {
+		t.Fatalf("unexpected recovery result: %s", result)
+	}
+}

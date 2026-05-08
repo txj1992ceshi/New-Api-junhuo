@@ -87,6 +87,7 @@ except Exception:
     raise SystemExit(0)
 items = data.get("data") or []
 preferred_map = {
+    "codex": ["gpt-5.5", "gpt-5.4", "gpt-5", "gpt-5-mini", "o3-mini", "codex-mini", "gpt-5.3-codex"],
     "cursor": [
         "default",
         "auto",
@@ -159,6 +160,7 @@ for account in accounts:
                     if name:
                         available.append(name)
 preferred_map = {
+    "codex": ["gpt-5.5", "gpt-5.4", "gpt-5", "gpt-5-mini", "o3-mini", "codex-mini", "gpt-5.3-codex"],
     "cursor": [
         "default",
         "auto",
@@ -242,6 +244,7 @@ accounts_raw = sys.argv[2]
 models_raw = sys.argv[3]
 
 preferred_map = {
+    "codex": ["gpt-5.5", "gpt-5.4", "gpt-5", "gpt-5-mini", "o3-mini", "codex-mini", "gpt-5.3-codex"],
     "cursor": ["default", "auto", "gpt-4.1-mini", "gpt-4o-mini", "gpt-5-mini"],
     "windsurf": ["gpt-5-mini", "gpt-4o-mini", "gpt-4.1-mini"],
     "kiro": ["claude-sonnet-4.5", "claude-sonnet-4", "claude-haiku-4.5", "deepseek-3.2", "glm-5", "qwen3-coder-next", "auto"],
@@ -406,12 +409,13 @@ validate_channel() {
   local auth_header="Authorization: Bearer $api_key"
   local kind
   case "$channel_name" in
+    codex-*) kind="codex" ;;
     cursor-*) kind="cursor" ;;
     kiro-*) kind="kiro" ;;
     *) kind="windsurf" ;;
   esac
   local models_timeout="$MODELS_TIMEOUT"
-  if [[ "$kind" == "cursor" ]]; then
+  if [[ "$kind" == "cursor" || "$kind" == "codex" ]]; then
     models_timeout="$CURSOR_MODELS_TIMEOUT"
   fi
 
@@ -512,3 +516,4 @@ PY
 validate_channel "cursor-pool-proxy" "${CURSOR_SMOKE_MODEL:-}"
 validate_channel "windsurf-pool-proxy" "${WINDSURF_SMOKE_MODEL:-}"
 validate_channel "kiro-pool-proxy" "${KIRO_SMOKE_MODEL:-}"
+validate_channel "codex-pool-proxy" "${CODEX_SMOKE_MODEL:-}"

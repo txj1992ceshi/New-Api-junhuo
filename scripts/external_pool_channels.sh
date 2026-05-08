@@ -229,6 +229,7 @@ run_check() {
   print_check_line "port 3003 listening" "$(port_listening 3003)"
   print_check_line "port 3401 listening" "$(port_listening 3401)"
   print_check_line "port 3501 listening" "$(port_listening 3501)"
+  print_check_line "port 3601 listening" "$(port_listening 3601)"
   echo
 
   print_check_line "CURSOR_POOL_BASE_URL" "${CURSOR_POOL_BASE_URL:-missing}"
@@ -246,6 +247,11 @@ run_check() {
   print_check_line "KIRO_POOL_AUTHORIZE_URL" "${KIRO_POOL_AUTHORIZE_URL:-missing}"
   print_check_line "KIRO_POOL_MODE" "${KIRO_POOL_MODE:-external_managed}"
   print_check_line "KIRO_POOL_AUTH_STRATEGY" "${KIRO_POOL_AUTH_STRATEGY:-local_state_direct}"
+  print_check_line "CODEX_POOL_BASE_URL" "${CODEX_POOL_BASE_URL:-missing}"
+  print_check_line "CODEX_POOL_API_KEY" "$( [[ -n "${CODEX_POOL_API_KEY:-}" ]] && echo set || echo missing )"
+  print_check_line "CODEX_POOL_AUTHORIZE_URL" "${CODEX_POOL_AUTHORIZE_URL:-missing}"
+  print_check_line "CODEX_POOL_MODE" "${CODEX_POOL_MODE:-provider_bridge}"
+  print_check_line "CODEX_POOL_AUTH_STRATEGY" "${CODEX_POOL_AUTH_STRATEGY:-provider_bridge}"
 }
 
 run_apply() {
@@ -261,6 +267,8 @@ run_apply() {
   : "${WINDSURF_POOL_API_KEY:?missing WINDSURF_POOL_API_KEY}"
   : "${KIRO_POOL_BASE_URL:?missing KIRO_POOL_BASE_URL}"
   : "${KIRO_POOL_API_KEY:?missing KIRO_POOL_API_KEY}"
+  : "${CODEX_POOL_BASE_URL:?missing CODEX_POOL_BASE_URL}"
+  : "${CODEX_POOL_API_KEY:?missing CODEX_POOL_API_KEY}"
 
   upsert_channel \
     "cursor" \
@@ -345,6 +353,34 @@ run_apply() {
     "${KIRO_MODELS:-gpt-5.4,gpt-5.5,claude-sonnet}" \
     "${KIRO_PRIORITY:-60}" \
     "${KIRO_WEIGHT:-100}"
+
+  upsert_channel \
+    "codex" \
+    "${CODEX_CHANNEL_NAME:-codex-pool-proxy}" \
+    "$CODEX_POOL_BASE_URL" \
+    "$CODEX_POOL_API_KEY" \
+    "${CODEX_MODELS:-codex-default,codex-gpt5,codex-gpt5-mini,codex-gpt54,codex-o3-mini}" \
+    "${CODEX_PRIORITY:-50}" \
+    "${CODEX_WEIGHT:-100}" \
+    "${CODEX_GROUP:-default}" \
+    "${CODEX_POOL_STATUS_PATH:-/auth/status}" \
+    "${CODEX_POOL_ACCOUNTS_PATH:-/auth/accounts}" \
+    "${CODEX_POOL_DASHBOARD_PATH:-/dashboard}" \
+    "${CODEX_POOL_AUTHORIZE_URL:-}" \
+    "${CODEX_POOL_AUTHORIZE_HINT:-}" \
+    "${CODEX_POOL_AUTH_START_PATH:-/auth/start}" \
+    "${CODEX_POOL_AUTH_COMPLETE_PATH:-/auth/complete}" \
+    "${CODEX_POOL_AUTH_HEADER:-Authorization}" \
+    "${CODEX_POOL_AUTH_SCHEME:-Bearer}" \
+    "${CODEX_POOL_TUNNEL_HINT:-}" \
+    "${CODEX_POOL_MODE:-provider_bridge}" \
+    "${CODEX_POOL_AUTH_STRATEGY:-provider_bridge}"
+  sync_channel_abilities \
+    "${CODEX_CHANNEL_NAME:-codex-pool-proxy}" \
+    "${CODEX_GROUP:-default}" \
+    "${CODEX_MODELS:-codex-default,codex-gpt5,codex-gpt5-mini,codex-gpt54,codex-o3-mini}" \
+    "${CODEX_PRIORITY:-50}" \
+    "${CODEX_WEIGHT:-100}"
 
   echo "external pool channels applied and abilities synced"
 }

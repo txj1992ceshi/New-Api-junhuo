@@ -1,6 +1,6 @@
 # `junhuo` 稳定模型别名约定
 
-本文定义本机 `Cursor / Windsurf / Kiro` 三条外部池渠道对外暴露的稳定模型名。
+本文定义本机 `Cursor / Windsurf / Kiro / Codex` 四条外部池渠道对外暴露的稳定模型名。
 
 目标只有一个：让下游调用方依赖你自己的稳定别名，而不是直接依赖上游客户端池里随时可能变化的原始模型名。
 
@@ -76,6 +76,33 @@
 - 在未确认一组长期稳定可调用模型之前，不对外承诺 Windsurf 稳定别名
 - 若后续验证出稳定入口，再补独立别名组
 
+### 2.4 Codex
+
+渠道名：`codex-pool-proxy`
+
+对外模型：
+
+- `codex-default`
+- `codex-gpt5`
+- `codex-gpt5-mini`
+- `codex-gpt54`
+- `codex-o3-mini`
+
+当前映射：
+
+- `codex-default` -> `gpt-5.4`
+- `codex-gpt5` -> `gpt-5`
+- `codex-gpt5-mini` -> `gpt-5-mini`
+- `codex-gpt54` -> `gpt-5.4`
+- `codex-o3-mini` -> `o3-mini`
+
+说明：
+
+- `codex-default` 是这条渠道的稳定默认入口，当前先收口到 `gpt-5.4`
+- `codex-gpt54` 与 `codex-default` 当前都指向 `gpt-5.4`，前者偏显式型号，后者偏默认入口
+- 这条渠道底层走 `provider_bridge`，真实可用性仍取决于本机 Codex 当前 provider 所指向的上游额度和限流
+- 当前这条渠道已经通过本机 `/auth/complete`、`/v1/models` 和最小推理验池
+
 ## 3. 当前推荐调用面
 
 如果你现在要给下游客户端、脚本、二次分发服务一组明确入口，推荐先只开放：
@@ -87,6 +114,11 @@
 - `kiro-haiku`
 - `kiro-deepseek`
 - `kiro-auto`
+- `codex-default`
+- `codex-gpt5`
+- `codex-gpt5-mini`
+- `codex-gpt54`
+- `codex-o3-mini`
 
 暂不建议对外主推：
 
@@ -128,5 +160,6 @@
 但从实际可用性角度，当前更推荐按以下理解使用：
 
 - `Cursor`：正式可用
+- `Codex`：正式可用
 - `Kiro`：可用，但受上游限流影响
 - `Windsurf`：灰度观察，不承诺稳定模型面

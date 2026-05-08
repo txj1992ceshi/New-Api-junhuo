@@ -64,12 +64,21 @@ type Channel struct {
 }
 
 type CodexPoolSummary struct {
-	AvailableCount int `json:"available_count"`
-	HealthyCount   int `json:"healthy_count"`
-	CooldownCount  int `json:"cooldown_count"`
-	SuspectCount   int `json:"suspect_count"`
-	DeadCount      int `json:"dead_count"`
-	TotalCount     int `json:"total_count"`
+	AvailableCount   int    `json:"available_count"`
+	HealthyCount     int    `json:"healthy_count"`
+	CooldownCount    int    `json:"cooldown_count"`
+	SuspectCount     int    `json:"suspect_count"`
+	DeadCount        int    `json:"dead_count"`
+	TotalCount       int    `json:"total_count"`
+	ErrorCount       int    `json:"error_count"`
+	Availability     string `json:"availability,omitempty"`
+	PoolState        string `json:"pool_state,omitempty"`
+	Diagnosis        string `json:"diagnosis,omitempty"`
+	UpstreamError    string `json:"upstream_error,omitempty"`
+	AuthCapable      bool   `json:"auth_capable,omitempty"`
+	InferenceProbed  bool   `json:"inference_probed,omitempty"`
+	InferenceCapable bool   `json:"inference_capable,omitempty"`
+	InferenceError   string `json:"inference_error,omitempty"`
 }
 
 type CursorPoolSummary struct {

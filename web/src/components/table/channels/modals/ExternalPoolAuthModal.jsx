@@ -27,6 +27,11 @@ import { getChannelAdminStatusKind, parseChannelOtherInfo } from '../channelCode
 const { Text } = Typography;
 
 const providerMetaMap = {
+  codex_pool: {
+    label: 'Codex',
+    startPath: 'codex_pool/auth/start',
+    completePath: 'codex_pool/auth/complete',
+  },
   cursor: {
     label: 'Cursor',
     startPath: 'cursor/auth/start',
@@ -60,18 +65,22 @@ const getMessageFromPayload = (payload) =>
 
 const getAuthDataFromPayload = (payload) => payload?.data || {};
 
+const getPoolFieldKind = (kind) => (kind === 'codex_pool' ? 'codex' : kind);
+
 const getExternalPoolBaseUrl = (record, kind) => {
+  const fieldKind = getPoolFieldKind(kind);
   const otherInfo = parseChannelOtherInfo(record);
-  const fromOtherInfo = String(otherInfo?.[`${kind}_pool_base_url`] || '').trim();
+  const fromOtherInfo = String(otherInfo?.[`${fieldKind}_pool_base_url`] || '').trim();
   if (fromOtherInfo) return fromOtherInfo.replace(/\/+$/, '');
   return String(record?.base_url || '').trim().replace(/\/+$/, '');
 };
 
 const getConfiguredAuthorizeUrl = (record, kind) => {
+  const fieldKind = getPoolFieldKind(kind);
   const otherInfo = parseChannelOtherInfo(record);
   return String(
-    otherInfo?.[`${kind}_pool_authorize_url`] ||
-      otherInfo?.[`${kind}_pool_dashboard_url`] ||
+    otherInfo?.[`${fieldKind}_pool_authorize_url`] ||
+      otherInfo?.[`${fieldKind}_pool_dashboard_url`] ||
       otherInfo?.authorize_url ||
       otherInfo?.dashboard_url ||
       '',
@@ -126,6 +135,7 @@ const ExternalPoolAuthModalDialog = ({
   );
   const effectiveAuthStrategy = String(forcedAuthStrategy || authStrategy || '').trim().toLowerCase();
   const isLocalStateDirect = effectiveAuthStrategy === 'local_state_direct';
+  const isProviderBridge = effectiveAuthStrategy === 'provider_bridge';
   const isManualImport = effectiveAuthStrategy === 'manual_token_import';
   const isCursorOAuthCallback =
     providerMeta.kind === 'cursor' && effectiveAuthStrategy === 'oauth_callback';
@@ -219,7 +229,7 @@ const ExternalPoolAuthModalDialog = ({
 
   const completeAuth = async () => {
     if (!channelId) return;
-    if (!isLocalStateDirect && (!input || !input.trim())) {
+    if (!isLocalStateDirect && !isProviderBridge && (!input || !input.trim())) {
       showError(t('请先粘贴回调 URL 或授权结果'));
       return;
     }
@@ -284,7 +294,11 @@ const ExternalPoolAuthModalDialog = ({
           <Button theme='solid' type='primary' onClick={completeAuth} loading={loading}>
             {t(
               completeActionLabel ||
-                (isLocalStateDirect ? '确认读取登录态' : '提交授权结果'),
+                (isProviderBridge
+                  ? '确认导入 Provider 配置'
+                  : isLocalStateDirect
+                    ? '确认读取登录态'
+                    : '提交授权结果'),
             )}
           </Button>
         </Space>
@@ -296,7 +310,9 @@ const ExternalPoolAuthModalDialog = ({
           type='info'
           description={
             authorizeHint ||
-            (isLocalStateDirect
+            (isProviderBridge
+              ? t(`点击下方按钮后，系统会重新读取本机 ${providerMeta.label} 当前 provider 配置并尝试导入当前渠道池，然后立即做一次最小验池。`)
+              : isLocalStateDirect
               ? t(`点击下方按钮后，系统会重新扫描本机 ${providerMeta.label} 登录态并尝试直接导入当前渠道池，然后立即做一次最小验池。`)
               : isCursorOAuthCallback
                 ? t(
@@ -321,7 +337,11 @@ const ExternalPoolAuthModalDialog = ({
           <Button type='primary' onClick={startAuth} loading={loading}>
             {t(
               primaryActionLabel ||
-                (isLocalStateDirect ? '开始读取登录态' : '打开授权页面'),
+                (isProviderBridge
+                  ? '开始读取 Provider 配置'
+                  : isLocalStateDirect
+                    ? '开始读取登录态'
+                    : '打开授权页面'),
             )}
           </Button>
           <Button
@@ -333,7 +353,7 @@ const ExternalPoolAuthModalDialog = ({
           </Button>
         </Space>
 
-        {!isLocalStateDirect && (
+        {!isLocalStateDirect && !isProviderBridge && (
           <Input.TextArea
             value={input}
             onChange={(value) => setInput(value)}
@@ -361,7 +381,9 @@ const ExternalPoolAuthModalDialog = ({
 
         <Text type='tertiary' size='small'>
           {t(
-            isLocalStateDirect
+            isProviderBridge
+              ? `说明：这里的“读取 Provider 配置”本质是读取本机 ${providerMeta.label} 当前 custom provider 配置并入池，不是标准 OAuth 网页回调。`
+              : isLocalStateDirect
               ? `说明：这里的“读取登录态”本质是读取本机 ${providerMeta.label} 登录态并入池，不是标准 OAuth 网页回调。`
               : isCursorOAuthCallback
                 ? '说明：这里的“授权登录”走的是 Cursor 专用回调适配层，会把回调 URL 或 JSON 结果解析后再入池。'

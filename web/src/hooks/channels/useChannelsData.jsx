@@ -805,7 +805,12 @@ export const useChannelsData = () => {
       });
       return;
     }
-    if (adminStatusKind === 'windsurf' || adminStatusKind === 'cursor' || adminStatusKind === 'kiro') {
+    if (
+      adminStatusKind === 'codex_pool' ||
+      adminStatusKind === 'windsurf' ||
+      adminStatusKind === 'cursor' ||
+      adminStatusKind === 'kiro'
+    ) {
       openExternalPoolModal({
         t,
         record,

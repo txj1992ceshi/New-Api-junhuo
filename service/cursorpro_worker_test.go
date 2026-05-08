@@ -20,6 +20,30 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestTriggerCursorProReplacementReturnsDisabled(t *testing.T) {
+	state := cursorProStateForChannel(43210)
+	state.LastResultStatus = ""
+	state.LastErrorCode = ""
+	state.LastErrorMessage = ""
+
+	result, err := TriggerCursorProReplacement(nil, 43210, "test_reason")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected replacement result")
+	}
+	if result.Triggered {
+		t.Fatalf("expected disabled trigger, got %+v", result)
+	}
+	if result.Status != cursorProResultCodeDisabled {
+		t.Fatalf("unexpected status: %+v", result)
+	}
+	if state.LastResultStatus != "disabled" || state.LastErrorCode != cursorProResultCodeDisabled {
+		t.Fatalf("unexpected state: %+v", state)
+	}
+}
+
 func TestUpsertCursorProTokenAppendsNewKeyAsNewState(t *testing.T) {
 	channel := &model.Channel{
 		Id:   1,

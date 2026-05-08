@@ -236,6 +236,68 @@ func CompleteCursorPoolAuth(c *gin.Context) {
 	respondExternalPoolAction(c, data, err)
 }
 
+func GetCodexPoolStatus(c *gin.Context) {
+	channelID, ok := externalPoolChannelID(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	data, err := service.GetCodexPoolStatusView(ctx, channelID)
+	respondExternalPoolView(c, data, err)
+}
+
+func GetCodexPoolAccounts(c *gin.Context) {
+	channelID, ok := externalPoolChannelID(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 12*time.Second)
+	defer cancel()
+	data, err := service.GetCodexPoolAccountsView(ctx, channelID)
+	respondExternalPoolView(c, data, err)
+}
+
+func GetCodexPoolAuthView(c *gin.Context) {
+	channelID, ok := externalPoolChannelID(c)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
+	defer cancel()
+	data, err := service.GetCodexPoolAuthView(ctx, channelID, c.Query("auth_strategy"))
+	respondExternalPoolView(c, data, err)
+}
+
+func StartCodexPoolAuth(c *gin.Context) {
+	channelID, ok := externalPoolChannelID(c)
+	if !ok {
+		return
+	}
+	req := externalPoolAuthStartRequest{}
+	_ = c.ShouldBindJSON(&req)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 20*time.Second)
+	defer cancel()
+	data, err := service.StartCodexPoolAuth(ctx, channelID, req.AuthStrategy)
+	respondExternalPoolAction(c, data, err)
+}
+
+func CompleteCodexPoolAuth(c *gin.Context) {
+	channelID, ok := externalPoolChannelID(c)
+	if !ok {
+		return
+	}
+	req := externalPoolAuthCompleteRequest{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	data, err := service.CompleteCodexPoolAuth(ctx, channelID, req.Input, req.AuthStrategy)
+	respondExternalPoolAction(c, data, err)
+}
+
 func GetKiroPoolStatus(c *gin.Context) {
 	channelID, ok := externalPoolChannelID(c)
 	if !ok {

@@ -19,6 +19,18 @@ import { openExternalPoolAuthModal } from './ExternalPoolAuthModal';
 const { Text } = Typography;
 
 const providerMetaMap = {
+  codex_pool: {
+    label: 'Codex',
+    statusPath: 'codex_pool/pool_status',
+    accountsPath: 'codex_pool/accounts',
+    authPath: 'codex_pool/auth_view',
+    title: 'Codex 帐号/池状态',
+    emptyTitle: '暂无账号',
+    emptyDescription: '当前 Codex 池里还没有可展示的账号。',
+    statusError: '读取 Codex 池状态失败',
+    accountsError: '读取 Codex 账号列表失败',
+    usageHint: '先确认 Codex provider bridge 服务在线，再访问 Dashboard 或执行补池操作。',
+  },
   cursor: {
     label: 'Cursor',
     statusPath: 'cursor/pool_status',

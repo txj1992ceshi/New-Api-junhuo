@@ -29,6 +29,9 @@ func resolveExternalPoolKind(channel *model.Channel) string {
 	if _, ok := resolveExternalPoolProxy(channel, ExternalPoolKindCursor); ok {
 		return ExternalPoolKindCursor
 	}
+	if _, ok := resolveExternalPoolProxy(channel, ExternalPoolKindCodex); ok {
+		return ExternalPoolKindCodex
+	}
 	if _, ok := resolveExternalPoolProxy(channel, ExternalPoolKindWindsurf); ok {
 		return ExternalPoolKindWindsurf
 	}

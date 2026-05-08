@@ -39,6 +39,9 @@ func externalPoolKindFromOtherInfo(otherInfo map[string]any) string {
 	if enabled, ok := otherInfo["cursor_pool_proxy"].(bool); ok && enabled {
 		return ExternalPoolKindCursor
 	}
+	if enabled, ok := otherInfo["codex_pool_proxy"].(bool); ok && enabled {
+		return ExternalPoolKindCodex
+	}
 	if enabled, ok := otherInfo["kiro_pool_proxy"].(bool); ok && enabled {
 		return ExternalPoolKindKiro
 	}

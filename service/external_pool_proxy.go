@@ -14,6 +14,7 @@ import (
 )
 
 const (
+	ExternalPoolKindCodex    = "codex"
 	ExternalPoolKindCursor   = "cursor"
 	ExternalPoolKindWindsurf = "windsurf"
 	ExternalPoolKindKiro     = "kiro"
@@ -215,6 +216,8 @@ func parseExternalPoolOtherInfoInt64(info map[string]interface{}, key string) in
 
 func externalPoolDisplayName(kind string) string {
 	switch kind {
+	case ExternalPoolKindCodex:
+		return "Codex"
 	case ExternalPoolKindCursor:
 		return "Cursor"
 	case ExternalPoolKindKiro:
@@ -423,6 +426,8 @@ func buildExternalPoolInferenceCandidates(ctx context.Context, channel *model.Ch
 		}
 	}
 	switch kind {
+	case ExternalPoolKindCodex:
+		appendModels([]string{"gpt-5.5", "gpt-5.4", "gpt-5", "gpt-5-mini", "o3-mini"})
 	case ExternalPoolKindCursor:
 		appendModels([]string{"default", "auto", "gpt-4.1-mini", "gpt-4o-mini", "gpt-5-mini"})
 	case ExternalPoolKindKiro:
@@ -538,9 +543,12 @@ func resolveExternalPoolProxy(channel *model.Channel, kind string) (*ExternalPoo
 		authorizeHint = parseExternalPoolOtherInfoString(info, "pool_authorize_hint")
 	}
 	if authorizeHint == "" {
-		if resolveExternalPoolAuthStrategy(channel, kind) == "local_state_direct" {
+		switch resolveExternalPoolAuthStrategy(channel, kind) {
+		case "provider_bridge":
+			authorizeHint = fmt.Sprintf("读取本机 %s 当前 provider 配置并导入当前渠道池，完成后立即执行最小验池。", externalPoolDisplayName(kind))
+		case "local_state_direct":
 			authorizeHint = fmt.Sprintf("读取本机 %s 登录态并导入当前渠道池，完成后立即执行最小验池。", externalPoolDisplayName(kind))
-		} else {
+		default:
 			authorizeHint = fmt.Sprintf("预留手动授权入口。完成 %s 登录授权后，回到池状态页确认账号数和可用数。", externalPoolDisplayName(kind))
 		}
 	}
@@ -694,6 +702,16 @@ func resolveExternalPoolAuthStrategyOverride(channel *model.Channel, kind string
 		strategy = strings.ToLower(strings.TrimSpace(parseExternalPoolOtherInfoString(info, kind+"_pool_auth_strategy")))
 		if strategy == "" {
 			strategy = strings.ToLower(strings.TrimSpace(parseExternalPoolOtherInfoString(info, "pool_auth_strategy")))
+		}
+	}
+	if kind == ExternalPoolKindCodex {
+		switch strategy {
+		case "", "provider_bridge":
+			return "provider_bridge"
+		case "manual_token_import":
+			return "manual_token_import"
+		default:
+			return strategy
 		}
 	}
 	if kind == ExternalPoolKindCursor {

@@ -50,6 +50,7 @@ duokai/
 
 # Local packaging outputs and extracted assets
 CursorPro420_unpack/
+CursorPro422_unpack/
 CursorPro*_assets/
 CursorPro*_extract/
 CursorPro_unpack/
@@ -67,6 +68,8 @@ winpack_tools/node_modules/
 local-pool-service/node_modules/
 
 # Local runtime outputs
+runtime/local-pools/*
+!runtime/local-pools/
 runtime/local-pools/*.env
 runtime/local-pools/*.pid
 runtime/local-pools/*.out
@@ -75,3 +78,7 @@ runtime/local-pools/*.err
 # Local helper binaries and staging
 .deploy-bin/
 CursorPro421_unpack/
+check_local_tokens.py
+clashx-helper-healthcheck.sh
+com.jj.clashx-helper-healthcheck.plist
+winpack_tools/

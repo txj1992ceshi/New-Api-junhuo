@@ -135,6 +135,9 @@ func MaybeTriggerCursorProReplacementOnHotPath(channelID int, reason string, at 
 	if channelID <= 0 || reason == "" {
 		return
 	}
+	if !cursorProRegisterAutomationEnabled() {
+		return
+	}
 	recordCodexHotPathTrigger(channelID, at)
 	go func() {
 		_, _ = SyncCursorProTokens(context.Background(), false, "hot_path_pre_sync")

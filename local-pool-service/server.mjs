@@ -12,14 +12,20 @@ import {
 } from '@aws/codewhisperer-streaming-client';
 
 const provider = String(process.env.PROVIDER || '').trim().toLowerCase();
-if (!provider || !['cursor', 'kiro', 'windsurf'].includes(provider)) {
-  console.error('PROVIDER must be one of: cursor, kiro, windsurf');
+if (!provider || !['cursor', 'kiro', 'windsurf', 'codex'].includes(provider)) {
+  console.error('PROVIDER must be one of: cursor, kiro, windsurf, codex');
   process.exit(1);
 }
 
 const port = Number(
   process.env.PORT ||
-    (provider === 'cursor' ? 3401 : provider === 'kiro' ? 3501 : 3003),
+    (provider === 'cursor'
+      ? 3401
+      : provider === 'kiro'
+        ? 3501
+        : provider === 'codex'
+          ? 3601
+          : 3003),
 );
 const apiKey = String(process.env.API_KEY || `demo-${provider}-key`).trim();
 const dashboardPassword = String(process.env.DASHBOARD_PASSWORD || `demo-${provider}-dashboard`).trim();
@@ -80,6 +86,9 @@ const cursorDirectAuthScheme = String(process.env.CURSOR_DIRECT_AUTH_SCHEME || '
 const cursorAuthStrategy = String(process.env.CURSOR_AUTH_STRATEGY || 'local_state_direct')
   .trim()
   .toLowerCase();
+const codexAuthStrategy = String(process.env.CODEX_AUTH_STRATEGY || 'provider_bridge')
+  .trim()
+  .toLowerCase();
 const windsurfAuthStrategy = String(process.env.WINDSURF_AUTH_STRATEGY || 'local_state_direct')
   .trim()
   .toLowerCase();
@@ -108,6 +117,7 @@ const defaultModelMap = {
     'glm-5',
     'qwen3-coder-next',
   ],
+  codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5', 'gpt-5-mini', 'o3-mini', 'codex-mini', 'gpt-5.3-codex'],
 };
 const fixedKiroProfileMap = {
   BuilderId: 'arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX',
@@ -230,6 +240,12 @@ function getSourcePaths() {
         'kiro.kiroagent',
         'profile.json',
       ),
+    codexAuthPath:
+      process.env.CODEX_AUTH_PATH ||
+      path.join(home, '.codex', 'auth.json'),
+    codexConfigPath:
+      process.env.CODEX_CONFIG_PATH ||
+      path.join(home, '.codex', 'config.toml'),
   };
 }
 
@@ -463,6 +479,75 @@ function readKiroLocalAccount() {
   }
 }
 
+function parseSimpleTomlValue(raw, key) {
+  const match = String(raw || '').match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"`, 'm'));
+  return String(match?.[1] || '').trim();
+}
+
+function readTomlSection(raw, sectionName) {
+  const lines = String(raw || '').split(/\r?\n/);
+  const header = `[${sectionName}]`;
+  let start = -1;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (lines[i].trim() === header) {
+      start = i + 1;
+      break;
+    }
+  }
+  if (start < 0) return '';
+  const body = [];
+  for (let i = start; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (/^\s*\[.+\]\s*$/.test(line)) {
+      break;
+    }
+    body.push(line);
+  }
+  return body.join('\n');
+}
+
+function parseCodexProviderBaseUrl(configRaw) {
+  const providerName = parseSimpleTomlValue(configRaw, 'model_provider');
+  if (!providerName) return '';
+  const sectionBody = readTomlSection(configRaw, `model_providers.${providerName}`);
+  return parseSimpleTomlValue(sectionBody, 'base_url');
+}
+
+function readCodexLocalAccount() {
+  const { codexAuthPath, codexConfigPath } = getSourcePaths();
+  if (!fs.existsSync(codexAuthPath) || !fs.existsSync(codexConfigPath)) return null;
+  try {
+    const authPayload = safeReadJson(codexAuthPath);
+    const configRaw = fs.readFileSync(codexConfigPath, 'utf8');
+    const email = String(authPayload.email || authPayload.account_email || 'codex-local').trim();
+    const apiKey = String(authPayload.OPENAI_API_KEY || authPayload.openai_api_key || '').trim();
+    const baseUrl = parseCodexProviderBaseUrl(configRaw);
+    const modelProvider = parseSimpleTomlValue(configRaw, 'model_provider');
+    if (!apiKey || !baseUrl) return null;
+    return {
+      id: 'codex-local-provider',
+      email,
+      source: 'local_codex_provider_config',
+      source_path: codexConfigPath,
+      method: 'provider_bridge',
+      provider: 'codex',
+      provider_base_url: baseUrl.replace(/\/+$/, ''),
+      provider_name: modelProvider || 'custom',
+      access_token: apiKey,
+      status: 'active',
+      added_at: nowIso(),
+      available_models: defaultModels(),
+      tier: modelProvider || 'custom',
+      metadata: {
+        auth_path: codexAuthPath,
+      },
+    };
+  } catch (error) {
+    console.warn('[codex] failed to parse provider config:', error.message);
+    return null;
+  }
+}
+
 function readSnapshotAccount() {
   if (!snapshotPath || !fs.existsSync(snapshotPath)) return null;
   try {
@@ -495,6 +580,7 @@ function readSnapshotAccount() {
 
 function providerLocalAccount() {
   if (provider === 'cursor') return readCursorLocalAccount();
+  if (provider === 'codex') return readCodexLocalAccount();
   if (provider === 'windsurf') return readWindsurfLocalAccount();
   return readKiroLocalAccount();
 }
@@ -507,6 +593,7 @@ function normalizeImportedAccount(raw) {
   if (!email || !accessToken) {
     throw new Error('missing email or access token');
   }
+  const localCodexAccount = provider === 'codex' ? readCodexLocalAccount() : null;
   return {
     id: raw.id || makeId(provider),
     email,
@@ -514,6 +601,11 @@ function normalizeImportedAccount(raw) {
     source_path: null,
     method: raw.method || 'manual',
     provider,
+    provider_base_url:
+      raw.provider_base_url ||
+      raw.base_url ||
+      localCodexAccount?.provider_base_url ||
+      null,
     access_token: accessToken,
     refresh_token: raw.refresh_token || raw.refreshToken || null,
     expires_at: raw.expires_at || raw.expiresAt || null,
@@ -535,12 +627,23 @@ function normalizeImportedAccount(raw) {
 function resolveProviderAuthStrategy(payload = {}) {
   const requested = String(payload?.auth_strategy || '').trim().toLowerCase();
   const fallback =
-    provider === 'cursor'
+    provider === 'codex'
+      ? codexAuthStrategy || 'provider_bridge'
+      : provider === 'cursor'
       ? cursorAuthStrategy || 'local_state_direct'
       : provider === 'windsurf'
         ? windsurfAuthStrategy || 'local_state_direct'
         : 'local_state_direct';
   const resolved = requested || fallback;
+  if (provider === 'codex') {
+    switch (resolved) {
+      case 'provider_bridge':
+      case 'manual_token_import':
+        return resolved;
+      default:
+        return 'provider_bridge';
+    }
+  }
   if (provider === 'cursor') {
     switch (resolved) {
       case 'manual_token_import':
@@ -748,6 +851,8 @@ async function verifyPoolAccounts(accounts) {
     if (provider === 'kiro') {
       const active = findActiveAccount(accounts);
       models = active ? await fetchKiroModels(active) : [];
+    } else if (provider === 'codex') {
+      models = await fetchCodexModels(accounts);
     } else if (provider === 'windsurf') {
       const active = findActiveAccount(accounts);
       models = Array.isArray(active?.available_models) ? active.available_models : defaultModels();
@@ -778,8 +883,27 @@ async function verifyPoolAccounts(accounts) {
 
 function buildAuthStartPayload(strategy) {
   const providerLabel =
-    provider === 'cursor' ? 'Cursor' : provider === 'windsurf' ? 'Windsurf' : 'Kiro';
+    provider === 'cursor'
+      ? 'Cursor'
+      : provider === 'windsurf'
+        ? 'Windsurf'
+        : provider === 'codex'
+          ? 'Codex'
+          : 'Kiro';
   const isLocalStateDirect = strategy === 'local_state_direct';
+  if (strategy === 'provider_bridge') {
+    return {
+      success: true,
+      message: 'provider bridge is ready',
+      recoverable: true,
+      data: {
+        auth_strategy: strategy,
+        next_action: 'complete_auth',
+        authorize_hint: `读取本机 ${providerLabel} 当前 provider 配置并导入当前渠道池。`,
+        required_fields: [],
+      },
+    };
+  }
   if (strategy === 'oauth_callback') {
     return {
       success: true,
@@ -823,12 +947,14 @@ function buildAuthStartPayload(strategy) {
 }
 
 function localAuthSourceName() {
+  if (provider === 'codex') return 'local_codex_provider_config';
   if (provider === 'cursor') return 'local_cursor_state_vscdb';
   if (provider === 'windsurf') return 'local_windsurf_state_vscdb';
   return 'local_kiro_auth_token';
 }
 
 function localAuthProviderLabel() {
+  if (provider === 'codex') return 'Codex';
   if (provider === 'cursor') return 'Cursor';
   if (provider === 'windsurf') return 'Windsurf';
   return 'Kiro';
@@ -936,14 +1062,19 @@ async function completeProviderAuth(payload = {}) {
     const providerLabel = localAuthProviderLabel();
     const sourceName = localAuthSourceName();
     const statusReason =
-      provider === 'cursor'
+      provider === 'codex'
+        ? 'codex_provider_config_not_found'
+        : provider === 'cursor'
         ? 'cursor_local_state_not_found'
         : provider === 'windsurf'
           ? 'windsurf_local_state_not_found'
           : 'kiro_local_state_not_found';
     return {
       success: false,
-      message: `未发现本机 ${providerLabel} 登录态，请先在客户端完成登录`,
+      message:
+        provider === 'codex'
+          ? `未发现本机 ${providerLabel} provider 配置，请先确认 ~/.codex/config.toml 与 ~/.codex/auth.json 可用`
+          : `未发现本机 ${providerLabel} 登录态，请先在客户端完成登录`,
       recoverable: true,
       data: {
         auth_strategy: authStrategy,
@@ -967,8 +1098,12 @@ async function completeProviderAuth(payload = {}) {
   return {
     success: verification.ok,
     message: verification.ok
-      ? `已读取本机 ${providerLabel} 登录态并通过最小验池`
-      : `已读取本机 ${providerLabel} 登录态，但最小验池失败`,
+      ? provider === 'codex'
+        ? `已读取本机 ${providerLabel} provider 配置并通过最小验池`
+        : `已读取本机 ${providerLabel} 登录态并通过最小验池`
+      : provider === 'codex'
+        ? `已读取本机 ${providerLabel} provider 配置，但最小验池失败`
+        : `已读取本机 ${providerLabel} 登录态，但最小验池失败`,
     recoverable: !verification.ok,
     data: {
       auth_strategy: authStrategy,
@@ -1147,6 +1282,61 @@ function stringListByPaths(root, paths) {
   return [...new Set(out)];
 }
 
+function parseEventStreamPayload(raw) {
+  const source = String(raw || '');
+  if (!source.includes('\nevent:') && !source.startsWith('event:')) {
+    return null;
+  }
+  const chunks = source
+    .split(/\n\s*\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const deltas = [];
+  let response = null;
+  let lastMessageText = '';
+  for (const chunk of chunks) {
+    const lines = chunk.split('\n');
+    let eventName = '';
+    const dataLines = [];
+    for (const line of lines) {
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).trim());
+      }
+    }
+    if (dataLines.length === 0) continue;
+    const parsed = safeJsonParse(dataLines.join('\n'), null);
+    if (!parsed || typeof parsed !== 'object') continue;
+    if (eventName === 'response.output_text.delta' && typeof parsed.delta === 'string') {
+      deltas.push(parsed.delta);
+    }
+    if (eventName === 'response.output_text.done' && typeof parsed.text === 'string') {
+      lastMessageText = parsed.text.trim();
+    }
+    if (eventName === 'response.completed' && parsed.response && typeof parsed.response === 'object') {
+      response = parsed.response;
+    }
+  }
+  if (!response && !lastMessageText && deltas.length === 0) {
+    return null;
+  }
+  const text = lastMessageText || deltas.join('').trim();
+  if (response && typeof response === 'object') {
+    if (!response.output_text && text) {
+      response.output_text = text;
+    }
+    if ((!Array.isArray(response.output) || response.output.length === 0) && text) {
+      response.output = buildOpenAIResponse(String(response.model || ''), text).output;
+    }
+    return response;
+  }
+  return {
+    object: 'response',
+    output_text: text,
+  };
+}
+
 function findActiveAccount(accounts) {
   return accounts.find((item) => item.status === 'active') || null;
 }
@@ -1257,6 +1447,82 @@ function readCursorAgentModels() {
   } catch {
     return defaultModels();
   }
+}
+
+function buildUpstreamUrl(baseUrl, pathName) {
+  const normalizedBase = String(baseUrl || '').trim().replace(/\/+$/, '');
+  const normalizedPath = pathName.startsWith('/') ? pathName : `/${pathName}`;
+  if (!normalizedBase) return normalizedPath;
+  if (normalizedBase.endsWith('/v1') && normalizedPath.startsWith('/v1/')) {
+    return `${normalizedBase}${normalizedPath.slice(3)}`;
+  }
+  return `${normalizedBase}${normalizedPath}`;
+}
+
+async function requestCodexProvider(account, method, pathName, body) {
+  const baseUrl = String(account?.provider_base_url || '').trim();
+  const apiKey = String(account?.access_token || '').trim();
+  if (!baseUrl) {
+    throw new Error('Codex provider base_url is missing');
+  }
+  if (!apiKey) {
+    throw new Error('Codex provider api key is missing');
+  }
+  const response = await fetch(buildUpstreamUrl(baseUrl, pathName), {
+    method,
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+      ...(body ? { 'Content-Type': 'application/json' } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const raw = await response.text();
+  const parsed = safeJsonParse(raw, null) || parseEventStreamPayload(raw);
+  if (!response.ok) {
+    const message =
+      parsed?.error?.message ||
+      parsed?.message ||
+      `codex provider upstream failed: status=${response.status}`;
+    throw new Error(message);
+  }
+  return parsed || { raw };
+}
+
+async function fetchCodexModels(accounts) {
+  const account = findActiveAccount(accounts);
+  if (!account) return [];
+  const payload = await requestCodexProvider(account, 'GET', '/v1/models', null);
+  const models = Array.isArray(payload?.data)
+    ? payload.data.map((item) => String(item?.id || '').trim()).filter(Boolean)
+    : [];
+  return models.length > 0 ? [...new Set(models)] : defaultModels();
+}
+
+async function invokeCodexResponse(accounts, payload) {
+  const account = findActiveAccount(accounts);
+  const requestedModel = String(payload?.model || '').trim() || 'gpt-5.5';
+  let responsePayload;
+  try {
+    responsePayload = await requestCodexProvider(account, 'POST', '/v1/responses', payload);
+  } catch (error) {
+    markAccountRequestOutcome(account, error);
+    throw error;
+  }
+  markAccountRequestOutcome(account, null);
+  if (responsePayload && typeof responsePayload === 'object' && responsePayload.object === 'response') {
+    return responsePayload;
+  }
+  const text =
+    responsePayload?.output_text ||
+    firstStringByPaths(responsePayload, cursorConnectTextPaths) ||
+    responsePayload?.text ||
+    responsePayload?.content ||
+    '';
+  return buildOpenAIResponse(requestedModel, String(text || '').trim(), {
+    provider: 'codex',
+    upstream_passthrough: true,
+  });
 }
 
 async function requestCursorDirectUpstream(account, method, pathName, body) {
@@ -2051,14 +2317,50 @@ async function invokeChatCompletion(accounts, payload) {
       'Windsurf local_state_direct pool currently supports auth/import only; inference remains on your external Windsurf pool service',
     );
   }
-  const resp = provider === 'kiro'
-    ? await invokeKiroResponse(accounts, { model: requestedModel, input: prompt })
-    : await invokeCursorResponse(accounts, { model: requestedModel, input: prompt });
+  let resp;
+  if (provider === 'kiro') {
+    resp = await invokeKiroResponse(accounts, { model: requestedModel, input: prompt });
+  } else if (provider === 'codex') {
+    const account = findActiveAccount(accounts);
+    try {
+      resp = await requestCodexProvider(account, 'POST', '/v1/chat/completions', payload);
+    } catch (error) {
+      markAccountRequestOutcome(account, error);
+      throw error;
+    }
+    markAccountRequestOutcome(account, null);
+    const codexChatText = String(resp?.choices?.[0]?.message?.content || '').trim();
+    if (!codexChatText) {
+      const fallback = await invokeCodexResponse(accounts, {
+        model: requestedModel,
+        input: prompt,
+      });
+      return buildOpenAIChatCompletion(
+        requestedModel,
+        String(fallback?.output_text || '').trim(),
+        {
+          provider: 'codex',
+          upstream_passthrough: true,
+          usage: resp?.usage || fallback?.usage || null,
+        },
+      );
+    }
+  } else {
+    resp = await invokeCursorResponse(accounts, { model: requestedModel, input: prompt });
+  }
   const text = String(resp?.output_text || '').trim();
-  return buildOpenAIChatCompletion(requestedModel, text, {
-    provider,
-    upstream_passthrough: resp?.upstream_passthrough || false,
-  });
+  if (provider === 'codex' && resp?.object === 'chat.completion') {
+    return resp;
+  }
+  return buildOpenAIChatCompletion(
+    requestedModel,
+    text ||
+      String(resp?.choices?.[0]?.message?.content || '').trim(),
+    {
+      provider,
+      upstream_passthrough: resp?.upstream_passthrough || provider === 'codex',
+    },
+  );
 }
 
 function renderLoginPage(errorMessage) {
@@ -2236,6 +2538,8 @@ const server = http.createServer(async (req, res) => {
       const models =
         provider === 'kiro'
           ? (active ? await fetchKiroModels(active) : [])
+          : provider === 'codex'
+            ? (active ? await fetchCodexModels(accounts) : [])
           : provider === 'windsurf'
             ? (active ? active.available_models || defaultModels() : [])
           : cursorProviderMode === 'direct'
@@ -2287,6 +2591,8 @@ const server = http.createServer(async (req, res) => {
       const response =
         provider === 'kiro'
           ? await invokeKiroResponse(accounts, payload)
+          : provider === 'codex'
+            ? await invokeCodexResponse(accounts, payload)
           : provider === 'windsurf'
             ? (() => {
                 throw new Error('Windsurf local_state_direct pool currently supports auth/import only; inference remains on your external Windsurf pool service');
@@ -2358,6 +2664,7 @@ server.listen(port, '127.0.0.1', () => {
       dataFile,
       snapshotPath: snapshotPath || null,
       sourcePaths: getSourcePaths(),
+      codexAuthStrategy: provider === 'codex' ? codexAuthStrategy : undefined,
       cursorProviderMode: provider === 'cursor' ? cursorProviderMode : undefined,
       windsurfAuthStrategy: provider === 'windsurf' ? windsurfAuthStrategy : undefined,
       cursorDirectProtocol: provider === 'cursor' ? cursorDirectProtocol : undefined,

@@ -130,6 +130,9 @@ func RunCodexPoolSupervisorOnce(ctx context.Context) {
 		if health == nil {
 			continue
 		}
+		if !cursorProRegisterAutomationEnabled() {
+			continue
+		}
 		if shouldTrigger, reason := ShouldTriggerCursorProReplacement(channel, health, now); shouldTrigger {
 			result, err := TriggerCursorProReplacement(ctx, channel.Id, reason)
 			if err != nil {

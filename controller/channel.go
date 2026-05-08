@@ -121,6 +121,28 @@ func injectRemoteCodexPoolSummary(ctx context.Context, channel *model.Channel) {
 	}
 }
 
+func injectExternalCodexPoolSummary(ctx context.Context, channel *model.Channel) {
+	if channel == nil {
+		return
+	}
+	if _, ok := service.ResolveCodexPoolProxy(channel); !ok {
+		return
+	}
+	summary, err := service.GetCodexPoolSummary(ctx, channel)
+	if err != nil {
+		common.SysLog(fmt.Sprintf("failed to load codex pool summary: channel_id=%d err=%v", channel.Id, err))
+		diagnosis := service.ClassifyExternalPoolSummary(nil, nil, err)
+		channel.CodexPoolSummary = &model.CodexPoolSummary{
+			Availability:  diagnosis.Availability,
+			PoolState:     "upstream_error",
+			Diagnosis:     diagnosis.Diagnosis,
+			UpstreamError: err.Error(),
+		}
+		return
+	}
+	channel.CodexPoolSummary = summary
+}
+
 func injectWindsurfPoolSummary(ctx context.Context, channel *model.Channel) {
 	if channel == nil {
 		return
@@ -271,6 +293,7 @@ func GetAllChannels(c *gin.Context) {
 	defer cancel()
 	for _, datum := range channelData {
 		injectRemoteCodexPoolSummary(enrichCtx, datum)
+		injectExternalCodexPoolSummary(enrichCtx, datum)
 		injectCursorPoolSummary(enrichCtx, datum)
 		injectKiroPoolSummary(enrichCtx, datum)
 		injectWindsurfPoolSummary(enrichCtx, datum)
@@ -478,6 +501,7 @@ func SearchChannels(c *gin.Context) {
 	defer cancel()
 	for _, datum := range pagedData {
 		injectRemoteCodexPoolSummary(enrichCtx, datum)
+		injectExternalCodexPoolSummary(enrichCtx, datum)
 		injectCursorPoolSummary(enrichCtx, datum)
 		injectKiroPoolSummary(enrichCtx, datum)
 		injectWindsurfPoolSummary(enrichCtx, datum)
@@ -513,6 +537,7 @@ func GetChannel(c *gin.Context) {
 			markRemoteCodexPoolProxy(channel)
 			injectRemoteCodexPoolSummary(c.Request.Context(), channel)
 		}
+		injectExternalCodexPoolSummary(c.Request.Context(), channel)
 		injectCursorPoolSummary(c.Request.Context(), channel)
 		injectKiroPoolSummary(c.Request.Context(), channel)
 		injectWindsurfPoolSummary(c.Request.Context(), channel)

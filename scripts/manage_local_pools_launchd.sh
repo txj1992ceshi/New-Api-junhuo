@@ -11,13 +11,14 @@ TARGET="${2:-all}"
 
 mkdir -p "${RUNTIME_DIR}" "${LAUNCH_AGENTS_DIR}"
 
-providers=(cursor windsurf kiro)
+providers=(cursor windsurf kiro codex)
 
 provider_port() {
   case "$1" in
     cursor) echo 3401 ;;
     windsurf) echo 3003 ;;
     kiro) echo 3501 ;;
+    codex) echo 3601 ;;
     *)
       echo "unknown provider: $1" >&2
       return 1
@@ -30,6 +31,7 @@ provider_script() {
     cursor) echo "${ROOT_DIR}/scripts/start_cursor_local_pool.sh" ;;
     windsurf) echo "${ROOT_DIR}/scripts/start_windsurf_local_pool.sh" ;;
     kiro) echo "${ROOT_DIR}/scripts/start_kiro_local_pool.sh" ;;
+    codex) echo "${ROOT_DIR}/scripts/start_codex_local_pool.sh" ;;
     *)
       echo "unknown provider: $1" >&2
       return 1
@@ -221,7 +223,7 @@ case "${ACTION}" in
     done < <(resolve_targets)
     ;;
   *)
-    echo "usage: $0 {install|uninstall|start|stop|restart|status|logs} [cursor|windsurf|kiro|all]" >&2
+    echo "usage: $0 {install|uninstall|start|stop|restart|status|logs} [cursor|windsurf|kiro|codex|all]" >&2
     exit 1
     ;;
 esac

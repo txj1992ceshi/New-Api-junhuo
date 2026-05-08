@@ -33,6 +33,8 @@ SOURCE_SYNC_INTERVAL_SECONDS = float(os.environ.get("CURSORPRO3_SOURCE_SYNC_INTE
 SOURCE_RETENTION_COUNT = int(os.environ.get("CURSORPRO3_SOURCE_RETENTION_COUNT", "20"))
 AX_MAIN_BUTTON_TITLE = "一键换号"
 AX_MODAL_BUTTON_TITLES = ["我知道了", "关闭", "×", "✕", "确定", "确认", "继续", "知道了", "稍后", "取消"]
+REGISTER_DISABLED_ERROR_CODE = "register_disabled"
+REGISTER_DISABLED_ERROR_MESSAGE = "External CursorPro register automation is disabled."
 
 
 def now_iso() -> str:
@@ -123,6 +125,7 @@ class AppState:
                 self.task_state.update(json.loads(STATE_FILE.read_text(encoding="utf-8")))
             except Exception as exc:
                 log(f"failed to load state file: {exc}")
+        self.reconcile_register_disabled_state()
         self.reconcile_running_after_restart()
 
     def save(self) -> None:
@@ -197,6 +200,20 @@ class AppState:
             )
             self.save()
             log("recovered orphaned register task after control server restart")
+            return dict(self.task_state)
+
+    def reconcile_register_disabled_state(self) -> dict[str, Any]:
+        with self.lock:
+            if self.task_state.get("status") == "running":
+                self.task_state["finished_at"] = self.task_state.get("finished_at") or now_iso()
+            self.task_state.update(
+                status="disabled",
+                created_count=0,
+                updated_count=0,
+                error_code=REGISTER_DISABLED_ERROR_CODE,
+                error_message=REGISTER_DISABLED_ERROR_MESSAGE,
+            )
+            self.save()
             return dict(self.task_state)
 
 
@@ -1187,14 +1204,8 @@ def run_register_task() -> None:
 
 
 def start_register_task() -> tuple[dict[str, Any], int]:
-    state.reconcile_running_timeout()
-    snap = state.snapshot()
-    if snap.get("status") == "running":
-        return snap, 409
-    thread = threading.Thread(target=run_register_task, daemon=True)
-    thread.start()
-    time.sleep(0.1)
-    return state.snapshot(), 202
+    snap = state.reconcile_register_disabled_state()
+    return snap, 200
 
 
 def health_payload() -> dict[str, Any]:
@@ -1280,7 +1291,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if self.path == "/v1/register/status":
-            self._send(200, state.snapshot())
+            self._send(200, state.reconcile_register_disabled_state())
             return
         if self.path in {"/v1/tokens/status", "/v1/token/status"}:
             self._send(200, refresh_sync_state())

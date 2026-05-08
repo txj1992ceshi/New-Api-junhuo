@@ -13,6 +13,11 @@
 - `cursor-default`
 - `cursor-gpt5-mini`
 - `cursor-gpt4o-mini`
+- `codex-default`
+- `codex-gpt5`
+- `codex-gpt5-mini`
+- `codex-gpt54`
+- `codex-o3-mini`
 - `kiro-sonnet`
 - `kiro-haiku`
 - `kiro-deepseek`
@@ -44,15 +49,18 @@
 若客户端需要默认模型，建议按以下顺序理解：
 
 1. `cursor-default`
-2. `cursor-gpt5-mini`
-3. `kiro-sonnet`
-4. `kiro-haiku`
-5. `kiro-deepseek`
-6. `kiro-auto`
+2. `codex-default`
+3. `cursor-gpt5-mini`
+4. `codex-gpt54`
+5. `kiro-sonnet`
+6. `kiro-haiku`
+7. `kiro-deepseek`
+8. `kiro-auto`
 
 说明：
 
 - `cursor-default` 是当前最适合做默认入口的稳定名
+- `codex-default` 是当前 Codex 渠道的稳定默认入口
 - `kiro-auto` 是兜底入口，不建议优先于显式模型
 
 ## 4. OpenAI 兼容调用样例
@@ -76,7 +84,7 @@ curl http://127.0.0.1:3000/v1/chat/completions \
   -H 'Authorization: Bearer YOUR_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "kiro-sonnet",
+    "model": "codex-gpt54",
     "messages": [
       {"role": "user", "content": "hello"}
     ]
@@ -94,6 +102,11 @@ curl http://127.0.0.1:3000/v1/chat/completions \
   "cursor-default",
   "cursor-gpt5-mini",
   "cursor-gpt4o-mini",
+  "codex-default",
+  "codex-gpt5",
+  "codex-gpt5-mini",
+  "codex-gpt54",
+  "codex-o3-mini",
   "kiro-sonnet",
   "kiro-haiku",
   "kiro-deepseek",
@@ -107,6 +120,7 @@ curl http://127.0.0.1:3000/v1/chat/completions \
 [
   "cursor-default",
   "cursor-gpt5-mini",
+  "codex-default",
   "kiro-sonnet"
 ]
 ```
@@ -116,6 +130,7 @@ curl http://127.0.0.1:3000/v1/chat/completions \
 当前按真实状态建议这样使用：
 
 - `Cursor`：主入口
+- `Codex`：第二主入口
 - `Kiro`：补充入口
 - `Windsurf`：观察位，不纳入默认客户端模型面
 

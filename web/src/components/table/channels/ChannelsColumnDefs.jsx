@@ -184,7 +184,7 @@ const getStatusLabel = (status, t) => {
 
 const renderStatus = (status, record = undefined, t) => {
   const adminStatusKind = getChannelAdminStatusKind(record);
-  if (adminStatusKind === 'codex' && record?.codex_pool_summary) {
+  if (adminStatusKind === 'codex_pool' && record?.codex_pool_summary) {
     return renderMultiKeyStatus(
       status,
       record?.codex_pool_summary?.total_count,
@@ -394,6 +394,10 @@ const renderMultiKeyStatus = (status, keySize, record, t, enabledKeySize = keySi
       </Tooltip>
     );
   };
+
+  if (getChannelAdminStatusKind(record) === 'codex_pool' && codexSummary) {
+    return renderExternalPoolStatusTags(codexSummary);
+  }
 
   if (isCodexStatusCapableChannel(record) && codexSummary) {
     const availableCount = codexSummary.available_count ?? 0;

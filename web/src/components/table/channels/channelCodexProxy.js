@@ -57,10 +57,21 @@ export const isKiroPoolProxy = (record) => {
   return otherInfo.kiro_pool_proxy === true;
 };
 
+export const isCodexPoolProxy = (record) => {
+  if (!record) {
+    return false;
+  }
+  const otherInfo = parseChannelOtherInfo(record);
+  return otherInfo.codex_pool_proxy === true;
+};
+
 export const isCodexStatusCapableChannel = (record) =>
   Number(record?.type) === 57 || isRemoteCodexPoolProxy(record);
 
 export const getChannelAdminStatusKind = (record) => {
+  if (isCodexPoolProxy(record)) {
+    return 'codex_pool';
+  }
   if (isCodexStatusCapableChannel(record)) {
     return 'codex';
   }
@@ -81,6 +92,12 @@ export const isAdminStatusCapableChannel = (record) =>
 
 export const getChannelAdminStatusActionText = (record, t) => {
   const adminStatusKind = getChannelAdminStatusKind(record);
+  if (adminStatusKind === 'codex_pool') {
+    return {
+      tooltip: t('查看 Codex 帐号信息与池状态'),
+      label: t('池状态'),
+    };
+  }
   if (adminStatusKind === 'codex') {
     return {
       tooltip: t('查看 Codex 帐号信息与用量'),
@@ -110,9 +127,10 @@ export const getChannelAdminStatusActionText = (record, t) => {
 
 export const getExternalPoolAuthConfig = (record) => {
   const kind = getChannelAdminStatusKind(record);
-  if (!kind || kind === 'codex') {
+  const poolKind = kind === 'codex_pool' ? 'codex' : kind;
+  if (!poolKind || kind === 'codex') {
     return {
-      kind,
+      kind: poolKind,
       authorizeUrl: '',
       dashboardUrl: '',
       authStartPath: '',
@@ -122,9 +140,9 @@ export const getExternalPoolAuthConfig = (record) => {
   }
   const otherInfo = parseChannelOtherInfo(record);
   const authorizeUrl =
-    String(otherInfo?.[`${kind}_pool_authorize_url`] || '').trim();
+    String(otherInfo?.[`${poolKind}_pool_authorize_url`] || '').trim();
   const dashboardPath =
-    String(otherInfo?.[`${kind}_pool_dashboard_path`] || '').trim();
+    String(otherInfo?.[`${poolKind}_pool_dashboard_path`] || '').trim();
   const baseUrl = String(record?.base_url || '').trim().replace(/\/+$/, '');
   const dashboardUrl = dashboardPath
     ? /^https?:\/\//.test(dashboardPath)
@@ -132,9 +150,9 @@ export const getExternalPoolAuthConfig = (record) => {
       : `${baseUrl}${dashboardPath.startsWith('/') ? dashboardPath : `/${dashboardPath}`}`
     : '';
   const authStartPath =
-    String(otherInfo?.[`${kind}_pool_auth_start_path`] || '/auth/start').trim();
+    String(otherInfo?.[`${poolKind}_pool_auth_start_path`] || '/auth/start').trim();
   const authCompletePath =
-    String(otherInfo?.[`${kind}_pool_auth_complete_path`] || '/auth/complete').trim();
+    String(otherInfo?.[`${poolKind}_pool_auth_complete_path`] || '/auth/complete').trim();
   const configured = Boolean(
     authorizeUrl ||
       dashboardUrl ||
@@ -152,6 +170,7 @@ export const getExternalPoolAuthConfig = (record) => {
 
 export const getExternalPoolSummary = (record) => {
   const kind = getChannelAdminStatusKind(record);
+  if (kind === 'codex_pool') return record?.codex_pool_summary || null;
   if (kind === 'cursor') return record?.cursor_pool_summary || null;
   if (kind === 'kiro') return record?.kiro_pool_summary || null;
   if (kind === 'windsurf') return record?.windsurf_pool_summary || null;

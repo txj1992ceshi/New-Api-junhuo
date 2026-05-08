@@ -245,6 +245,46 @@ Antigravity 渠道最初可以是单账号形态。
 - 第一阶段不要求把上游账号明细回灌进 `channel_info.multi_key_meta`
 - `kiro_pool_authorize_url` 适合预留给后续手动授权入口
 
+## 4.4 Codex 外部池代理渠道样例
+
+第一阶段的 Codex 渠道不走原生 app-server 协议，而是走 `provider_bridge`：
+
+- 读取本机 `~/.codex/config.toml`
+- 读取本机 `~/.codex/auth.json`
+- 把当前 Codex custom provider 配置桥接成外部池
+
+```json
+{
+  "name": "codex-pool-proxy",
+  "type": "OpenAI-compatible",
+  "status": "enabled",
+  "priority": 50,
+  "weight": 100,
+  "group": "default",
+  "models": "codex-default,codex-gpt5,codex-gpt5-mini,codex-gpt54,codex-o3-mini",
+  "base_url": "http://127.0.0.1:3601",
+  "key": "demo-codex-key",
+  "other": {
+    "codex_pool_proxy": true,
+    "codex_pool_status_path": "/auth/status",
+    "codex_pool_accounts_path": "/auth/accounts",
+    "codex_pool_dashboard_path": "/dashboard",
+    "codex_pool_auth_start_path": "/auth/start",
+    "codex_pool_auth_complete_path": "/auth/complete",
+    "codex_pool_inference_mode": "dual",
+    "codex_pool_probe_inference": true,
+    "codex_pool_auth_strategy": "provider_bridge"
+  }
+}
+```
+
+关注点：
+
+- 这条渠道的“授权登录/读取 Provider 配置”本质是本机 provider bridge，不是官方 OAuth
+- `models` 建议只暴露稳定别名，不直接全量放出上游模型原名
+- 若本机 Codex 当前 provider 指向的是代理或聚合网关，真实可用性取决于该 provider 自身额度/限流
+- `codex_pool_inference_mode=dual` 适合第一阶段，同时暴露 `/v1/responses` 和 `/v1/chat/completions`
+
 ## 5. Antigravity 多账号池渠道样例
 
 `antigravity-openclaw2` 这类渠道的重点，不是某一个 key，而是多账号池。

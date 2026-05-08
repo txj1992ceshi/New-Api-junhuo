@@ -13,6 +13,17 @@ timestamp() {
   date '+%Y-%m-%d %H:%M:%S'
 }
 
+load_provider_env() {
+  local provider="$1"
+  local env_file="${RUNTIME_DIR}/${provider}.env"
+  if [[ -f "${env_file}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${env_file}"
+    set +a
+  fi
+}
+
 is_healthy() {
   local port="$1"
   local api_key="$2"
@@ -31,6 +42,7 @@ watch_cursor() {
     echo "[$(timestamp)] [cursor] restarting direct local pool" >>"${out_file}"
     (
       cd "${ROOT_DIR}"
+      load_provider_env cursor
       export CURSOR_PROVIDER_MODE=direct
       export CURSOR_DIRECT_PROTOCOL=connect
       export CURSOR_DIRECT_BASE_URL='https://api2.cursor.sh'
@@ -57,12 +69,12 @@ watch_windsurf() {
     echo "[$(timestamp)] [windsurf] restarting WindsurfAPI main pool" >>"${out_file}"
     (
       cd "${ROOT_DIR}/WindsurfAPI"
+      load_provider_env windsurf
       set -a
       source ./.env
       set +a
       export PORT=3003
       export API_KEY='demo-windsurf-key'
-      export DASHBOARD_PASSWORD='demo-windsurf-dashboard'
       exec node src/index.js
     ) >>"${out_file}" 2>>"${err_file}" || true
     sleep "${RESTART_DELAY}"
@@ -80,9 +92,30 @@ watch_kiro() {
     echo "[$(timestamp)] [kiro] restarting local pool" >>"${out_file}"
     (
       cd "${ROOT_DIR}"
+      load_provider_env kiro
       export KIRO_AUTH_STRATEGY=local_state_direct
       export INFERENCE_MODE=responses
       exec bash "${ROOT_DIR}/scripts/start_kiro_local_pool.sh"
+    ) >>"${out_file}" 2>>"${err_file}" || true
+    sleep "${RESTART_DELAY}"
+  done
+}
+
+watch_codex() {
+  local out_file="${RUNTIME_DIR}/codex-terminal.out"
+  local err_file="${RUNTIME_DIR}/codex-terminal.err"
+  while true; do
+    if is_healthy 3601 "demo-codex-key"; then
+      sleep "${CHECK_INTERVAL}"
+      continue
+    fi
+    echo "[$(timestamp)] [codex] restarting provider bridge local pool" >>"${out_file}"
+    (
+      cd "${ROOT_DIR}"
+      load_provider_env codex
+      export CODEX_AUTH_STRATEGY=provider_bridge
+      export INFERENCE_MODE=dual
+      exec bash "${ROOT_DIR}/scripts/start_codex_local_pool.sh"
     ) >>"${out_file}" 2>>"${err_file}" || true
     sleep "${RESTART_DELAY}"
   done
@@ -99,5 +132,6 @@ echo "[$(timestamp)] terminal profile supervisor starting"
 watch_cursor &
 watch_windsurf &
 watch_kiro &
+watch_codex &
 
 wait

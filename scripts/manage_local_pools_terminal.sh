@@ -58,7 +58,7 @@ case "${ACTION}" in
     exec screen -r "${SESSION_NAME}"
     ;;
   logs)
-    for provider in cursor windsurf kiro; do
+    for provider in cursor windsurf kiro codex; do
       echo "[${provider}] stdout"
       tail -n 30 "${RUNTIME_DIR}/${provider}-terminal.out" 2>/dev/null || true
       echo
@@ -71,7 +71,7 @@ case "${ACTION}" in
     bash "${ROOT_DIR}/scripts/manage_local_pools.sh" validate
     ;;
   *)
-    echo "usage: $0 {start|stop|restart|status|attach|logs|validate} [cursor|windsurf|kiro|all]" >&2
+    echo "usage: $0 {start|stop|restart|status|attach|logs|validate} [cursor|windsurf|kiro|codex|all]" >&2
     exit 1
     ;;
 esac
