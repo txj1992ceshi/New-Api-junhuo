@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/dto"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -50,6 +51,48 @@ func GetEnabledModels() []string {
 	// Find distinct models
 	DB.Table("abilities").Where("enabled = ?", true).Distinct("model").Pluck("model", &models)
 	return models
+}
+
+func GetGroupPublicModels(group string) []string {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return nil
+	}
+	type channelSettingRow struct {
+		Settings string
+	}
+	var rows []channelSettingRow
+	err := DB.Table("channels").
+		Select("distinct channels.settings").
+		Joins("join abilities on abilities.channel_id = channels.id").
+		Where("abilities."+commonGroupCol+" = ? and abilities.enabled = ? and channels.status = ?", group, true, common.ChannelStatusEnabled).
+		Scan(&rows).Error
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	publicModels := make([]string, 0, len(rows)*2)
+	for _, row := range rows {
+		if strings.TrimSpace(row.Settings) == "" {
+			continue
+		}
+		settings := dto.ChannelOtherSettings{}
+		if err := common.UnmarshalJsonStr(row.Settings, &settings); err != nil {
+			continue
+		}
+		for _, modelName := range settings.PublicModels {
+			modelName = strings.TrimSpace(modelName)
+			if modelName == "" {
+				continue
+			}
+			if _, ok := seen[modelName]; ok {
+				continue
+			}
+			seen[modelName] = struct{}{}
+			publicModels = append(publicModels, modelName)
+		}
+	}
+	return publicModels
 }
 
 func GetAllEnableAbilities() []Ability {

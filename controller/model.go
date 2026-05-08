@@ -3,6 +3,8 @@ package controller
 import (
 	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -124,6 +126,10 @@ func ListModels(c *gin.Context, modelType int) {
 	}
 
 	modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
+	userId := c.GetInt("id")
+	userGroup, _ := model.GetUserGroup(userId, false)
+	tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
+	publicModels := resolveRequestPublicModels(userGroup, tokenGroup)
 	if modelLimitEnable {
 		s, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
 		var tokenModelLimit map[string]bool
@@ -132,7 +138,9 @@ func ListModels(c *gin.Context, modelType int) {
 		} else {
 			tokenModelLimit = map[string]bool{}
 		}
-		for allowModel, _ := range tokenModelLimit {
+		modelsToExpose := orderedMapKeys(tokenModelLimit)
+		modelsToExpose = filterVisibleModelsByPublicContract(modelsToExpose, tokenModelLimit, publicModels)
+		for _, allowModel := range modelsToExpose {
 			if !acceptUnsetRatioModel {
 				_, _, exist := ratio_setting.GetModelRatioOrPrice(allowModel)
 				if !exist {
@@ -153,9 +161,7 @@ func ListModels(c *gin.Context, modelType int) {
 			}
 		}
 	} else {
-		userId := c.GetInt("id")
-		userGroup, err := model.GetUserGroup(userId, false)
-		if err != nil {
+		if strings.TrimSpace(userGroup) == "" {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": "get user group failed",
@@ -163,7 +169,6 @@ func ListModels(c *gin.Context, modelType int) {
 			return
 		}
 		group := userGroup
-		tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
 		if tokenGroup != "" {
 			group = tokenGroup
 		}
@@ -180,6 +185,7 @@ func ListModels(c *gin.Context, modelType int) {
 		} else {
 			models = model.GetGroupEnabledModels(group)
 		}
+		models = filterVisibleModelsByPublicContract(models, nil, publicModels)
 		for _, modelName := range models {
 			if !acceptUnsetRatioModel {
 				_, _, exist := ratio_setting.GetModelRatioOrPrice(modelName)
@@ -238,6 +244,74 @@ func ListModels(c *gin.Context, modelType int) {
 			"object":  "list",
 		})
 	}
+}
+
+func resolveRequestPublicModels(userGroup string, tokenGroup string) []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0, 4)
+	appendPublic := func(group string) {
+		for _, modelName := range model.GetGroupPublicModels(group) {
+			modelName = strings.TrimSpace(modelName)
+			if modelName == "" {
+				continue
+			}
+			if _, ok := seen[modelName]; ok {
+				continue
+			}
+			seen[modelName] = struct{}{}
+			out = append(out, modelName)
+		}
+	}
+	if tokenGroup == "auto" {
+		for _, group := range service.GetUserAutoGroup(userGroup) {
+			appendPublic(group)
+		}
+		return out
+	}
+	if strings.TrimSpace(tokenGroup) != "" {
+		appendPublic(tokenGroup)
+		return out
+	}
+	appendPublic(userGroup)
+	return out
+}
+
+func filterVisibleModelsByPublicContract(models []string, allowed map[string]bool, publicModels []string) []string {
+	if len(publicModels) == 0 {
+		return models
+	}
+	filtered := make([]string, 0, len(publicModels))
+	seen := make(map[string]struct{})
+	for _, modelName := range publicModels {
+		modelName = strings.TrimSpace(modelName)
+		if modelName == "" {
+			continue
+		}
+		if allowed != nil && !allowed[modelName] {
+			continue
+		}
+		if _, ok := seen[modelName]; ok {
+			continue
+		}
+		seen[modelName] = struct{}{}
+		filtered = append(filtered, modelName)
+	}
+	if len(filtered) > 0 {
+		return filtered
+	}
+	return models
+}
+
+func orderedMapKeys(input map[string]bool) []string {
+	if len(input) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func ChannelListModels(c *gin.Context) {

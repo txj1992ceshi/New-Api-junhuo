@@ -1,94 +1,64 @@
 # `junhuo` 稳定模型别名约定
 
-本文定义本机 `Cursor / Windsurf / Kiro / Codex` 四条外部池渠道对外暴露的稳定模型名。
+当前这套 external-pool 进入双层语义：
 
-目标只有一个：让下游调用方依赖你自己的稳定别名，而不是直接依赖上游客户端池里随时可能变化的原始模型名。
+- 对外稳定合同：`gpt-5.5`、`gpt-5.4`
+- 兼容期旧 alias：继续可路由，但不再作为主推荐模型面
 
 ## 1. 设计原则
 
-- 对外优先暴露稳定别名，不直接暴露全部原始模型名
-- 每条渠道只保留少量已经验过、可长期维护的入口名
-- 映射关系由渠道配置维护，调用方不直接感知上游原始名
-- 若未来上游原始模型名变化，只改渠道映射，不要求所有调用方改名
+- 对外稳定合同优先
+- 后台继续保留真实模型名
+- 旧 alias 只做兼容，不再扩大使用面
+- 真实上游变化时，优先改 `responses_model_mapping`
 
-## 2. 当前正式别名
+## 2. 当前统一合同
 
-截至当前本机联调状态，建议正式使用以下别名。
+四条渠道都应对外支持：
 
-### 2.1 Cursor
+- `gpt-5.5`
+- `gpt-5.4`
 
-渠道名：`cursor-pool-proxy`
+这两个名字是能力契约名，不要求真实上游也同名。
 
-对外模型：
+## 3. 各渠道当前建议映射
 
-- `cursor-default`
-- `cursor-gpt5-mini`
-- `cursor-gpt4o-mini`
+### 3.1 Cursor
 
-当前映射：
+- `gpt-5.5` -> `default`
+- `gpt-5.4` -> `gpt-5-mini`
+
+兼容旧 alias：
 
 - `cursor-default` -> `default`
 - `cursor-gpt5-mini` -> `gpt-5-mini`
 - `cursor-gpt4o-mini` -> `gpt-4o-mini`
 
-说明：
+### 3.2 Windsurf
 
-- `cursor-default` 不是官方固定模型名，而是 `Cursor` 这条渠道的稳定默认入口
-- `default` 背后真实落到哪一类模型能力，由当前 `Cursor` 登录态和上游策略决定
-- 当前这条渠道已经通过真实 `/v1/responses` 验证，可作为第一优先级本地登录态可调用池
+- `gpt-5.5` -> `gpt-5-mini`
+- `gpt-5.4` -> `gemini-2.5-flash`
 
-### 2.2 Kiro
+`Windsurf` 后台仍会看到账号真实可用模型，外部不再直接承诺这些原名。
 
-渠道名：`kiro-pool-proxy`
+### 3.3 Kiro
 
-对外模型：
+- `gpt-5.5` -> `claude-sonnet-4.5`
+- `gpt-5.4` -> `claude-haiku-4.5`
 
-- `kiro-sonnet`
-- `kiro-haiku`
-- `kiro-deepseek`
-- `kiro-auto`
-
-当前映射：
+兼容旧 alias：
 
 - `kiro-sonnet` -> `claude-sonnet-4.5`
 - `kiro-haiku` -> `claude-haiku-4.5`
 - `kiro-deepseek` -> `deepseek-3.2`
 - `kiro-auto` -> `auto`
 
-说明：
+### 3.4 Codex
 
-- `kiro-auto` 是这条渠道的稳定兜底入口
-- 当前 `Kiro` 渠道链路已接通，但仍可能受到上游限流影响
-- 别名稳定不代表上游不会 `429/503`，限流仍由渠道降级策略处理
+- `gpt-5.5` -> `gpt-5.5`
+- `gpt-5.4` -> `gpt-5.4`
 
-### 2.3 Windsurf
-
-渠道名：`windsurf-pool-proxy`
-
-当前状态：
-
-- 暂不定义正式稳定别名
-- 先保留为灰度观察渠道
-- 当前账号池已入池，但已验证过的若干原始模型名存在废弃或 entitlement 不稳定问题
-
-建议：
-
-- 在未确认一组长期稳定可调用模型之前，不对外承诺 Windsurf 稳定别名
-- 若后续验证出稳定入口，再补独立别名组
-
-### 2.4 Codex
-
-渠道名：`codex-pool-proxy`
-
-对外模型：
-
-- `codex-default`
-- `codex-gpt5`
-- `codex-gpt5-mini`
-- `codex-gpt54`
-- `codex-o3-mini`
-
-当前映射：
+兼容旧 alias：
 
 - `codex-default` -> `gpt-5.4`
 - `codex-gpt5` -> `gpt-5`
@@ -96,70 +66,24 @@
 - `codex-gpt54` -> `gpt-5.4`
 - `codex-o3-mini` -> `o3-mini`
 
-说明：
-
-- `codex-default` 是这条渠道的稳定默认入口，当前先收口到 `gpt-5.4`
-- `codex-gpt54` 与 `codex-default` 当前都指向 `gpt-5.4`，前者偏显式型号，后者偏默认入口
-- 这条渠道底层走 `provider_bridge`，真实可用性仍取决于本机 Codex 当前 provider 所指向的上游额度和限流
-- 当前这条渠道已经通过本机 `/auth/complete`、`/v1/models` 和最小推理验池
-
-## 3. 当前推荐调用面
-
-如果你现在要给下游客户端、脚本、二次分发服务一组明确入口，推荐先只开放：
-
-- `cursor-default`
-- `cursor-gpt5-mini`
-- `cursor-gpt4o-mini`
-- `kiro-sonnet`
-- `kiro-haiku`
-- `kiro-deepseek`
-- `kiro-auto`
-- `codex-default`
-- `codex-gpt5`
-- `codex-gpt5-mini`
-- `codex-gpt54`
-- `codex-o3-mini`
-
-暂不建议对外主推：
-
-- `windsurf-pool-proxy` 的原始模型名
-- `Cursor` 当前未纳入稳定别名的其它探测模型
-- `Kiro` 当前未纳入稳定别名的其它探测模型
-
 ## 4. 配置落点
 
-当前这套稳定别名通过渠道配置落地：
+当前稳定合同通过这些字段落地：
 
 - `channels.models`
 - `channels.test_model`
-- `channels.model_mapping`
+- `channels.settings.public_models`
 - `channels.settings.responses_model_mapping`
 
-这意味着：
+其中：
 
-- 渠道列表和后台测试优先显示稳定别名
-- `/v1/responses` 路径会把稳定别名映射为真实上游模型名
-- 调用方可以长期绑定稳定别名，不必感知上游原始模型漂移
+- `public_models` 决定 `/v1/models` 暴露面
+- `responses_model_mapping` 决定统一合同如何落到真实上游模型
 
-## 5. 变更规则
+## 5. 兼容期策略
 
-后续若要新增或调整稳定别名，建议遵循：
+兼容期内：
 
-1. 先在池状态确认账号仍然 `active`
-2. 先用真实 `/v1/models`、`/v1/responses` 验证原始模型名
-3. 验证通过后再把原始模型名纳入稳定别名
-4. 优先增量调整 `model_mapping`，避免直接把全部原始模型放出去
-5. 若某个原始模型废弃，只改映射目标，不改对外稳定别名
-
-## 6. 当前优先级建议
-
-- `Cursor = priority 80`
-- `Windsurf = priority 70`
-- `Kiro = priority 60`
-
-但从实际可用性角度，当前更推荐按以下理解使用：
-
-- `Cursor`：正式可用
-- `Codex`：正式可用
-- `Kiro`：可用，但受上游限流影响
-- `Windsurf`：灰度观察，不承诺稳定模型面
+- `/v1/models` 应优先只显示 `gpt-5.5 / gpt-5.4`
+- 旧 alias 保留在渠道能力里，保证老调用不立刻中断
+- 新 token 优先只放行 `gpt-5.5 / gpt-5.4`

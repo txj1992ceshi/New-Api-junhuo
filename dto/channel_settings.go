@@ -42,6 +42,7 @@ type ChannelOtherSettings struct {
 	UpstreamModelUpdateLastDetectedModels []string          `json:"upstream_model_update_last_detected_models,omitempty"` // 上次检测到的可加入模型
 	UpstreamModelUpdateLastRemovedModels  []string          `json:"upstream_model_update_last_removed_models,omitempty"`  // 上次检测到的可删除模型
 	UpstreamModelUpdateIgnoredModels      []string          `json:"upstream_model_update_ignored_models,omitempty"`       // 手动忽略的模型
+	PublicModels                          []string          `json:"public_models,omitempty"`                              // 对外 /v1/models 暴露的公共模型面
 	ResponsesModelMapping                 map[string]string `json:"responses_model_mapping,omitempty"`                    // 仅 /v1/responses 生效的模型映射
 	ResponsesCompactModelMapping          map[string]string `json:"responses_compact_model_mapping,omitempty"`            // 仅 /v1/responses/compact 生效的模型映射
 }

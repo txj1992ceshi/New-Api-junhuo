@@ -20,10 +20,10 @@ fi
 
 case "$PROFILE" in
   full)
-    MODEL_LIMITS="cursor-default,cursor-gpt5-mini,cursor-gpt4o-mini,kiro-sonnet,kiro-haiku,kiro-deepseek,kiro-auto"
+    MODEL_LIMITS="gpt-5.5,gpt-5.4,cursor-default,cursor-gpt5-mini,cursor-gpt4o-mini,kiro-sonnet,kiro-haiku,kiro-deepseek,kiro-auto,codex-default,codex-gpt5,codex-gpt5-mini,codex-gpt54,codex-o3-mini"
     ;;
   conservative)
-    MODEL_LIMITS="cursor-default,cursor-gpt5-mini,kiro-sonnet"
+    MODEL_LIMITS="gpt-5.5,gpt-5.4,cursor-default,kiro-sonnet,codex-default"
     ;;
   *)
     echo "unknown PROFILE: $PROFILE (use full or conservative)" >&2

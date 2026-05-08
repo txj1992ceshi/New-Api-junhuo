@@ -253,6 +253,19 @@ func TestClassifyExternalPoolState(t *testing.T) {
 	}
 }
 
+func TestShouldTryNextInferenceModelOnTransientErrors(t *testing.T) {
+	cases := []string{
+		"gpt-5.5: context deadline exceeded",
+		"unexpected status 503 Service Unavailable",
+		"internal server error: upstream unavailable",
+	}
+	for _, input := range cases {
+		if !shouldTryNextInferenceModel(fmt.Errorf("%s", input)) {
+			t.Fatalf("expected transient error to try next model: %s", input)
+		}
+	}
+}
+
 func TestGetExternalPoolSummaryIncludesPoolState(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

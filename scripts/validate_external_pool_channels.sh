@@ -245,9 +245,9 @@ models_raw = sys.argv[3]
 
 preferred_map = {
     "codex": ["gpt-5.5", "gpt-5.4", "gpt-5", "gpt-5-mini", "o3-mini", "codex-mini", "gpt-5.3-codex"],
-    "cursor": ["default", "auto", "gpt-4.1-mini", "gpt-4o-mini", "gpt-5-mini"],
-    "windsurf": ["gpt-5-mini", "gpt-4o-mini", "gpt-4.1-mini"],
-    "kiro": ["claude-sonnet-4.5", "claude-sonnet-4", "claude-haiku-4.5", "deepseek-3.2", "glm-5", "qwen3-coder-next", "auto"],
+    "cursor": ["gpt-5.5", "gpt-5.4", "default", "auto", "gpt-4.1-mini", "gpt-4o-mini", "gpt-5-mini"],
+    "windsurf": ["gpt-5.5", "gpt-5.4", "gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini"],
+    "kiro": ["gpt-5.5", "gpt-5.4", "claude-sonnet-4.5", "claude-sonnet-4", "claude-haiku-4.5", "deepseek-3.2", "glm-5", "qwen3-coder-next", "auto"],
 }
 
 def load_json(raw):
@@ -389,7 +389,50 @@ should_try_next_model() {
   [[ "$body_lc" == *"model_deprecated"* ]] && return 0
   [[ "$body_lc" == *"已被 windsurf 上游废弃"* ]] && return 0
   [[ "$body_lc" == *"不可用（未订阅或已被封禁）"* ]] && return 0
+  [[ "$body_lc" == *"context deadline exceeded"* ]] && return 0
+  [[ "$body_lc" == *"timeout"* ]] && return 0
+  [[ "$body_lc" == *"model_not_available"* ]] && return 0
+  [[ "$body_lc" == *"temporarily unavailable"* ]] && return 0
+  [[ "$body_lc" == *"internal server error"* ]] && return 0
+  [[ "$body_lc" == *"bad gateway"* ]] && return 0
   return 1
+}
+
+resolve_upstream_mapping() {
+  local requested_model="$1"
+  local settings_raw="${2:-}"
+  python3 - "$requested_model" "$settings_raw" <<'PY'
+import json, sys
+requested = (sys.argv[1] or "").strip()
+raw = sys.argv[2] if len(sys.argv) > 2 else ""
+try:
+    payload = json.loads(raw) if raw else {}
+except Exception:
+    payload = {}
+mapping = payload.get("responses_model_mapping") if isinstance(payload, dict) else {}
+if isinstance(mapping, dict):
+    value = mapping.get(requested)
+    if isinstance(value, str) and value.strip():
+        print(value.strip())
+PY
+}
+
+resolve_public_models() {
+  local settings_raw="${1:-}"
+  python3 - "$settings_raw" <<'PY'
+import json, sys
+raw = sys.argv[1] if len(sys.argv) > 1 else ""
+try:
+    payload = json.loads(raw) if raw else {}
+except Exception:
+    payload = {}
+models = payload.get("public_models") if isinstance(payload, dict) else []
+if isinstance(models, list):
+    for item in models:
+        text = str(item or "").strip()
+        if text:
+            print(text)
+PY
 }
 
 validate_channel() {
@@ -397,7 +440,7 @@ validate_channel() {
   local smoke_model="${2:-}"
 
   local row
-  row="$(sqlite3 -separator $'\t' "$DB_PATH" "select id,name,base_url,key,status,models,other_info from channels where name = '$name' limit 1;")"
+  row="$(sqlite3 -separator $'\t' "$DB_PATH" "select id,name,base_url,key,status,models,other_info,settings,test_model from channels where name = '$name' limit 1;")"
   if [[ -z "$row" ]]; then
     echo
     echo "[$name]"
@@ -405,7 +448,7 @@ validate_channel() {
     return
   fi
 
-  IFS=$'\t' read -r id channel_name base_url api_key status models other_info <<< "$row"
+  IFS=$'\t' read -r id channel_name base_url api_key status models other_info settings test_model <<< "$row"
   local auth_header="Authorization: Bearer $api_key"
   local kind
   case "$channel_name" in
@@ -466,12 +509,24 @@ PY
 
   local candidate_models=""
   if [[ -z "$smoke_model" ]]; then
-    candidate_models="$(build_candidate_models "$kind" "$accounts_body" "$models_body")"
-    if [[ "$accounts_code" == "200" ]]; then
-      smoke_model="$(resolve_first_model_from_accounts "$kind" "$accounts_body")"
+    local public_models
+    public_models="$(resolve_public_models "$settings")"
+    if [[ -n "$public_models" ]]; then
+      candidate_models="$public_models"
+      smoke_model="$(printf '%s\n' "$public_models" | sed -n '1p')"
     fi
-    if [[ -z "$smoke_model" ]]; then
-      smoke_model="$(resolve_first_model_from_models "$kind" "$models_body")"
+    if [[ -z "$candidate_models" && -n "$test_model" ]]; then
+      candidate_models="$test_model"
+      smoke_model="$test_model"
+    fi
+    if [[ -z "$candidate_models" ]]; then
+      candidate_models="$(build_candidate_models "$kind" "$accounts_body" "$models_body")"
+      if [[ "$accounts_code" == "200" ]]; then
+        smoke_model="$(resolve_first_model_from_accounts "$kind" "$accounts_body")"
+      fi
+      if [[ -z "$smoke_model" ]]; then
+        smoke_model="$(resolve_first_model_from_models "$kind" "$models_body")"
+      fi
     fi
   fi
   if [[ -z "$smoke_model" ]]; then
@@ -489,7 +544,12 @@ PY
     while IFS= read -r candidate; do
       [[ -z "$candidate" ]] && continue
       selected_model="$candidate"
-      response_result="$(probe_inference_with_mode "$base_url" "$auth_header" "$candidate" "$inference_mode")"
+      local candidate_probe_model
+      candidate_probe_model="$(resolve_upstream_mapping "$candidate" "$settings")"
+      if [[ -z "$candidate_probe_model" ]]; then
+        candidate_probe_model="$candidate"
+      fi
+      response_result="$(probe_inference_with_mode "$base_url" "$auth_header" "$candidate_probe_model" "$inference_mode")"
       response_code="$(printf '%s\n' "$response_result" | sed -n '1p')"
       response_body="$(printf '%s\n' "$response_result" | sed -n '2,$p')"
       if [[ "$response_code" =~ ^2 ]]; then
@@ -502,11 +562,21 @@ PY
       fi
     done <<< "$candidate_models"
   else
-    response_result="$(probe_inference_with_mode "$base_url" "$auth_header" "$smoke_model" "$inference_mode")"
+    local direct_probe_model
+    direct_probe_model="$(resolve_upstream_mapping "$smoke_model" "$settings")"
+    if [[ -z "$direct_probe_model" ]]; then
+      direct_probe_model="$smoke_model"
+    fi
+    response_result="$(probe_inference_with_mode "$base_url" "$auth_header" "$direct_probe_model" "$inference_mode")"
     response_code="$(printf '%s\n' "$response_result" | sed -n '1p')"
     response_body="$(printf '%s\n' "$response_result" | sed -n '2,$p')"
   fi
+  local upstream_model
+  upstream_model="$(resolve_upstream_mapping "$selected_model" "$settings")"
+  local probe_model="${upstream_model:-$selected_model}"
   print_line "smoke_model" "$selected_model"
+  print_line "request_model" "$selected_model"
+  print_line "mapped_upstream_model" "$probe_model"
   print_line "responses_timeout" "${RESPONSES_TIMEOUT}s"
   print_line "inference_mode" "$inference_mode"
   print_line "inference_http" "$response_code"

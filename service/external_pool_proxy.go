@@ -335,10 +335,10 @@ func ProbeExternalPoolInference(ctx context.Context, channel *model.Channel, kin
 	}
 	// If not authenticated (or no active inventory), inference probe is not meaningful.
 	if status == nil || !status.Authenticated {
-		return true, false, "not_authenticated"
+		return false, false, "not_authenticated"
 	}
 	if status.Active <= 0 {
-		return true, false, "no_active_accounts"
+		return false, false, "no_active_accounts"
 	}
 	inferenceMode := resolveExternalPoolInferenceMode(info, kind)
 	candidateModels := buildExternalPoolInferenceCandidates(ctx, channel, kind, status)
@@ -416,6 +416,10 @@ func buildExternalPoolInferenceCandidates(ctx context.Context, channel *model.Ch
 			appendModel(modelName)
 		}
 	}
+	if channel != nil && channel.TestModel != nil {
+		appendModel(*channel.TestModel)
+	}
+	appendModels(channel.GetOtherSettings().PublicModels)
 	if status != nil {
 		appendModels(status.Models)
 	}
@@ -447,9 +451,21 @@ func shouldTryNextInferenceModel(err error) bool {
 		strings.Contains(msg, "not entitled") ||
 		strings.Contains(msg, "model_not_found") ||
 		strings.Contains(msg, "unsupported model") ||
+		strings.Contains(msg, "invalid model") ||
 		strings.Contains(msg, "model_deprecated") ||
 		strings.Contains(msg, "已被 windsurf 上游废弃") ||
-		strings.Contains(msg, "不可用（未订阅或已被封禁）")
+		strings.Contains(msg, "不可用（未订阅或已被封禁）") ||
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "temporarily unavailable") ||
+		strings.Contains(msg, "upstream unavailable") ||
+		strings.Contains(msg, "model_not_available") ||
+		strings.Contains(msg, "internal server error") ||
+		strings.Contains(msg, "bad gateway") ||
+		strings.Contains(msg, "status 500") ||
+		strings.Contains(msg, "status 502") ||
+		strings.Contains(msg, "status 503") ||
+		strings.Contains(msg, "status 504")
 }
 
 func resolveExternalPoolInferenceMode(info map[string]interface{}, kind string) string {

@@ -158,9 +158,20 @@ Antigravity 渠道最初可以是单账号形态。
   "priority": 80,
   "weight": 100,
   "group": "default",
-  "models": "gpt-5.4,gpt-5.5",
+  "models": "gpt-5.5,gpt-5.4,cursor-default,cursor-gpt5-mini,cursor-gpt4o-mini",
   "base_url": "http://127.0.0.1:3401",
   "key": "sk-cursor-proxy",
+  "test_model": "gpt-5.5",
+  "settings": {
+    "public_models": ["gpt-5.5", "gpt-5.4"],
+    "responses_model_mapping": {
+      "gpt-5.5": "default",
+      "gpt-5.4": "gpt-5-mini",
+      "cursor-default": "default",
+      "cursor-gpt5-mini": "gpt-5-mini",
+      "cursor-gpt4o-mini": "gpt-4o-mini"
+    }
+  },
   "other": {
     "cursor_pool_proxy": true,
     "cursor_pool_status_path": "/auth/status",
@@ -177,6 +188,7 @@ Antigravity 渠道最初可以是单账号形态。
 关注点：
 
 - 默认仍走普通 OpenAI-compatible relay
+- 对外推荐模型面收口到 `gpt-5.5 / gpt-5.4`
 - `other` 里的 `cursor_pool_proxy=true` 才会触发后台池状态面板
 - 若外部 Cursor 服务接口路径不同，可直接改 `*_path`
 - 若后面要走手动授权登录，可直接配置 `cursor_pool_authorize_url`
@@ -191,9 +203,17 @@ Antigravity 渠道最初可以是单账号形态。
   "priority": 70,
   "weight": 100,
   "group": "default",
-  "models": "gpt-5.4,gpt-5.5,claude-sonnet",
+  "models": "gpt-5.5,gpt-5.4,claude-sonnet",
   "base_url": "http://127.0.0.1:3003",
   "key": "windsurf-api-key",
+  "test_model": "gpt-5.5",
+  "settings": {
+    "public_models": ["gpt-5.5", "gpt-5.4"],
+    "responses_model_mapping": {
+      "gpt-5.5": "gpt-5-mini",
+      "gpt-5.4": "gemini-2.5-flash"
+    }
+  },
   "other": {
     "windsurf_pool_proxy": true,
     "windsurf_pool_status_path": "/auth/status",
@@ -223,9 +243,21 @@ Antigravity 渠道最初可以是单账号形态。
   "priority": 60,
   "weight": 100,
   "group": "default",
-  "models": "gpt-5.4,gpt-5.5,claude-sonnet",
+  "models": "gpt-5.5,gpt-5.4,kiro-sonnet,kiro-haiku,kiro-deepseek,kiro-auto",
   "base_url": "http://127.0.0.1:3501",
   "key": "sk-kiro-proxy",
+  "test_model": "gpt-5.5",
+  "settings": {
+    "public_models": ["gpt-5.5", "gpt-5.4"],
+    "responses_model_mapping": {
+      "gpt-5.5": "claude-sonnet-4.5",
+      "gpt-5.4": "claude-haiku-4.5",
+      "kiro-sonnet": "claude-sonnet-4.5",
+      "kiro-haiku": "claude-haiku-4.5",
+      "kiro-deepseek": "deepseek-3.2",
+      "kiro-auto": "auto"
+    }
+  },
   "other": {
     "kiro_pool_proxy": true,
     "kiro_pool_status_path": "/auth/status",
@@ -261,9 +293,22 @@ Antigravity 渠道最初可以是单账号形态。
   "priority": 50,
   "weight": 100,
   "group": "default",
-  "models": "codex-default,codex-gpt5,codex-gpt5-mini,codex-gpt54,codex-o3-mini",
+  "models": "gpt-5.5,gpt-5.4,codex-default,codex-gpt5,codex-gpt5-mini,codex-gpt54,codex-o3-mini",
   "base_url": "http://127.0.0.1:3601",
   "key": "demo-codex-key",
+  "test_model": "gpt-5.5",
+  "settings": {
+    "public_models": ["gpt-5.5", "gpt-5.4"],
+    "responses_model_mapping": {
+      "gpt-5.5": "gpt-5.5",
+      "gpt-5.4": "gpt-5.4",
+      "codex-default": "gpt-5.4",
+      "codex-gpt5": "gpt-5",
+      "codex-gpt5-mini": "gpt-5-mini",
+      "codex-gpt54": "gpt-5.4",
+      "codex-o3-mini": "o3-mini"
+    }
+  },
   "other": {
     "codex_pool_proxy": true,
     "codex_pool_status_path": "/auth/status",
@@ -281,8 +326,8 @@ Antigravity 渠道最初可以是单账号形态。
 关注点：
 
 - 这条渠道的“授权登录/读取 Provider 配置”本质是本机 provider bridge，不是官方 OAuth
-- `models` 建议只暴露稳定别名，不直接全量放出上游模型原名
-- 若本机 Codex 当前 provider 指向的是代理或聚合网关，真实可用性取决于该 provider 自身额度/限流
+- 对外推荐模型面应收口到 `gpt-5.5 / gpt-5.4`
+- 后台和账号详情继续展示真实上游模型名
 - `codex_pool_inference_mode=dual` 适合第一阶段，同时暴露 `/v1/responses` 和 `/v1/chat/completions`
 
 ## 5. Antigravity 多账号池渠道样例
