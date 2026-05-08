@@ -70,6 +70,28 @@ func clearChannelInfo(channel *model.Channel) {
 	}
 }
 
+func sanitizeChannelKeys(channels []*model.Channel) {
+	for _, channel := range channels {
+		if channel == nil {
+			continue
+		}
+		channel.Key = ""
+	}
+}
+
+func hydrateChannelKeys(channels []*model.Channel) {
+	for _, channel := range channels {
+		if channel == nil || channel.Id <= 0 || strings.TrimSpace(channel.Key) != "" {
+			continue
+		}
+		full, err := model.GetChannelById(channel.Id, true)
+		if err != nil || full == nil {
+			continue
+		}
+		channel.Key = full.Key
+	}
+}
+
 func injectCodexPoolSummary(channel *model.Channel) {
 	if channel == nil {
 		return
@@ -251,7 +273,7 @@ func GetAllChannels(c *gin.Context) {
 			if tag == nil || *tag == "" {
 				continue
 			}
-			tagChannels, err := model.GetChannelsByTag(*tag, idSort, false)
+			tagChannels, err := model.GetChannelsByTag(*tag, idSort, true)
 			if err != nil {
 				continue
 			}
@@ -289,7 +311,7 @@ func GetAllChannels(c *gin.Context) {
 			order = "id desc"
 		}
 
-		err := baseQuery.Order(order).Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Omit("key").Find(&channelData).Error
+		err := baseQuery.Order(order).Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Find(&channelData).Error
 		if err != nil {
 			common.SysError("failed to get channels: " + err.Error())
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "获取渠道列表失败，请稍后重试"})
@@ -310,6 +332,7 @@ func GetAllChannels(c *gin.Context) {
 		injectKiroPoolSummary(enrichCtx, datum)
 		injectWindsurfPoolSummary(enrichCtx, datum)
 	}
+	sanitizeChannelKeys(channelData)
 
 	countQuery := model.DB.Model(&model.Channel{})
 	if statusFilter == common.ChannelStatusEnabled {
@@ -428,7 +451,7 @@ func SearchChannels(c *gin.Context) {
 		}
 		for _, tag := range tags {
 			if tag != nil && *tag != "" {
-				tagChannel, err := model.GetChannelsByTag(*tag, idSort, false)
+				tagChannel, err := model.GetChannelsByTag(*tag, idSort, true)
 				if err == nil {
 					channelData = append(channelData, tagChannel...)
 				}
@@ -504,6 +527,7 @@ func SearchChannels(c *gin.Context) {
 	}
 
 	pagedData := channelData[startIdx:endIdx]
+	hydrateChannelKeys(pagedData)
 
 	for _, datum := range pagedData {
 		clearChannelInfo(datum)
@@ -518,6 +542,7 @@ func SearchChannels(c *gin.Context) {
 		injectKiroPoolSummary(enrichCtx, datum)
 		injectWindsurfPoolSummary(enrichCtx, datum)
 	}
+	sanitizeChannelKeys(pagedData)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
