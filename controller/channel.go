@@ -21,6 +21,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const externalPoolSummaryTimeout = 3 * time.Second
+
 type OpenAIModel struct {
 	ID         string         `json:"id"`
 	Object     string         `json:"object"`
@@ -106,8 +108,10 @@ func injectRemoteCodexPoolSummary(ctx context.Context, channel *model.Channel) {
 	if _, ok := service.ResolveRemoteCodexPoolProxy(channel); !ok {
 		return
 	}
+	summaryCtx, cancel := context.WithTimeout(context.Background(), externalPoolSummaryTimeout)
+	defer cancel()
 	markRemoteCodexPoolProxy(channel)
-	summary, err := service.GetRemoteCodexPoolChannelSummary(ctx, channel)
+	summary, err := service.GetRemoteCodexPoolChannelSummary(summaryCtx, channel)
 	if err != nil {
 		common.SysLog(fmt.Sprintf("failed to load remote codex pool summary: channel_id=%d err=%v", channel.Id, err))
 		return
@@ -128,7 +132,9 @@ func injectExternalCodexPoolSummary(ctx context.Context, channel *model.Channel)
 	if _, ok := service.ResolveCodexPoolProxy(channel); !ok {
 		return
 	}
-	summary, err := service.GetCodexPoolSummary(ctx, channel)
+	summaryCtx, cancel := context.WithTimeout(context.Background(), externalPoolSummaryTimeout)
+	defer cancel()
+	summary, err := service.GetCodexPoolSummary(summaryCtx, channel)
 	if err != nil {
 		common.SysLog(fmt.Sprintf("failed to load codex pool summary: channel_id=%d err=%v", channel.Id, err))
 		diagnosis := service.ClassifyExternalPoolSummary(nil, nil, err)
@@ -150,7 +156,9 @@ func injectWindsurfPoolSummary(ctx context.Context, channel *model.Channel) {
 	if _, ok := service.ResolveWindsurfPoolProxy(channel); !ok {
 		return
 	}
-	summary, err := service.GetWindsurfPoolSummary(ctx, channel)
+	summaryCtx, cancel := context.WithTimeout(context.Background(), externalPoolSummaryTimeout)
+	defer cancel()
+	summary, err := service.GetWindsurfPoolSummary(summaryCtx, channel)
 	if err != nil {
 		common.SysLog(fmt.Sprintf("failed to load windsurf pool summary: channel_id=%d err=%v", channel.Id, err))
 		diagnosis := service.ClassifyExternalPoolSummary(nil, nil, err)
@@ -172,7 +180,9 @@ func injectCursorPoolSummary(ctx context.Context, channel *model.Channel) {
 	if _, ok := service.ResolveCursorPoolProxy(channel); !ok {
 		return
 	}
-	summary, err := service.GetCursorPoolSummary(ctx, channel)
+	summaryCtx, cancel := context.WithTimeout(context.Background(), externalPoolSummaryTimeout)
+	defer cancel()
+	summary, err := service.GetCursorPoolSummary(summaryCtx, channel)
 	if err != nil {
 		common.SysLog(fmt.Sprintf("failed to load cursor pool summary: channel_id=%d err=%v", channel.Id, err))
 		diagnosis := service.ClassifyExternalPoolSummary(nil, nil, err)
@@ -194,7 +204,9 @@ func injectKiroPoolSummary(ctx context.Context, channel *model.Channel) {
 	if _, ok := service.ResolveKiroPoolProxy(channel); !ok {
 		return
 	}
-	summary, err := service.GetKiroPoolSummary(ctx, channel)
+	summaryCtx, cancel := context.WithTimeout(context.Background(), externalPoolSummaryTimeout)
+	defer cancel()
+	summary, err := service.GetKiroPoolSummary(summaryCtx, channel)
 	if err != nil {
 		common.SysLog(fmt.Sprintf("failed to load kiro pool summary: channel_id=%d err=%v", channel.Id, err))
 		diagnosis := service.ClassifyExternalPoolSummary(nil, nil, err)
