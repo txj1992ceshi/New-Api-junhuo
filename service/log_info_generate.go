@@ -232,14 +232,15 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 		if strategy := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatToolStrategy); strategy != "" {
 			adminInfo["antigravity_responses_tool_strategy"] = strategy
 		}
-		if relayInfo != nil {
-			adminInfo["antigravity_responses_request_type"] = antigravityResponsesRequestType(relayInfo.RelayMode)
-			if relayInfo.UpstreamModelName != "" {
-				adminInfo["antigravity_responses_upstream_model"] = relayInfo.UpstreamModelName
-			}
+	if relayInfo != nil {
+		adminInfo["antigravity_responses_request_type"] = antigravityResponsesRequestType(relayInfo.RelayMode)
+		if relayInfo.UpstreamModelName != "" {
+			adminInfo["antigravity_responses_upstream_model"] = relayInfo.UpstreamModelName
+		}
 		}
 	}
 	AppendAntigravityResponsesStreamAdminInfo(ctx, adminInfo)
+	appendResponsesCompletedAdminInfo(ctx, adminInfo)
 	if class := common.GetContextKeyString(ctx, constant.ContextKeyAntigravityErrorClass); class != "" && class == string(AntigravityErrorClassProtocolIncompatible) {
 		adminInfo["antigravity_protocol_incompatible"] = true
 	}
@@ -307,6 +308,21 @@ func AppendAntigravityResponsesStreamAdminInfo(ctx *gin.Context, adminInfo map[s
 	}
 	if common.GetContextKeyBool(ctx, constant.ContextKeyAntigravityResponsesFailedAsEmpty) {
 		adminInfo["antigravity_responses_failed_as_empty"] = true
+	}
+}
+
+func appendResponsesCompletedAdminInfo(ctx *gin.Context, adminInfo map[string]interface{}) {
+	if ctx == nil || adminInfo == nil {
+		return
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompletedSeen) {
+		adminInfo["responses_completed_seen"] = true
+	}
+	if common.GetContextKeyBool(ctx, constant.ContextKeyResponsesCompletedSynthesized) {
+		adminInfo["responses_completed_synthesized"] = true
+	}
+	if reason := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompletedSynthReason); reason != "" {
+		adminInfo["responses_completed_synth_reason"] = reason
 	}
 }
 
