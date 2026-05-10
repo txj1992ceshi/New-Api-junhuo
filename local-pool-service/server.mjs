@@ -157,6 +157,75 @@ function json(res, statusCode, payload) {
   res.end(body);
 }
 
+function writeSseEvent(res, eventName, payload) {
+  res.write(`event: ${eventName}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+}
+
+function streamOpenAIResponse(res, responsePayload) {
+  const response =
+    responsePayload && typeof responsePayload === 'object' ? responsePayload : buildOpenAIResponse('', '');
+  const outputText =
+    typeof response.output_text === 'string'
+      ? response.output_text
+      : Array.isArray(response.output)
+        ? response.output
+            .flatMap((item) => (Array.isArray(item?.content) ? item.content : []))
+            .filter((item) => item?.type === 'output_text' && typeof item?.text === 'string')
+            .map((item) => item.text)
+            .join('')
+        : '';
+  const responseShell = {
+    id: response.id || `resp_${crypto.randomUUID().replace(/-/g, '')}`,
+    object: 'response',
+    created_at: Number.isFinite(response.created_at) ? response.created_at : Math.floor(Date.now() / 1000),
+    status: 'in_progress',
+    model: String(response.model || ''),
+  };
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key',
+  });
+
+  writeSseEvent(res, 'response.created', {
+    type: 'response.created',
+    response: responseShell,
+  });
+
+  if (outputText) {
+    writeSseEvent(res, 'response.output_text.delta', {
+      type: 'response.output_text.delta',
+      delta: outputText,
+    });
+  }
+
+  for (const item of Array.isArray(response.output) ? response.output : []) {
+    writeSseEvent(res, 'response.output_item.done', {
+      type: 'response.output_item.done',
+      item,
+    });
+  }
+
+  writeSseEvent(res, 'response.completed', {
+    type: 'response.completed',
+    response: {
+      ...response,
+      id: responseShell.id,
+      object: 'response',
+      created_at: responseShell.created_at,
+      status: 'completed',
+      output_text: outputText,
+    },
+  });
+  res.write('data: [DONE]\n\n');
+  res.end();
+}
+
 function html(res, statusCode, content) {
   res.writeHead(statusCode, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(content);
@@ -2870,7 +2939,11 @@ const server = http.createServer(async (req, res) => {
                 throw new Error('Windsurf local_state_direct pool currently supports auth/import only; inference remains on your external Windsurf pool service');
               })()
           : await invokeCursorResponse(accounts, payload);
-      json(res, 200, response);
+      if (payload?.stream === true) {
+        streamOpenAIResponse(res, response);
+      } else {
+        json(res, 200, response);
+      }
     } catch (error) {
       json(res, 503, {
         error: {
