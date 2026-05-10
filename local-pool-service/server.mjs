@@ -130,7 +130,7 @@ const defaultModelMap = {
     'glm-5',
     'qwen3-coder-next',
   ],
-  codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5', 'gpt-5-mini', 'o3-mini', 'codex-mini', 'gpt-5.3-codex'],
+  codex: ['gpt-5.5', 'gpt-5.4'],
 };
 const fixedKiroProfileMap = {
   BuilderId: 'arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX',
@@ -1769,7 +1769,7 @@ async function requestCodexProvider(account, method, pathName, body) {
   if (!apiKey) {
     throw new Error('Codex provider api key is missing');
   }
-  const response = await fetch(buildUpstreamUrl(baseUrl, pathName), {
+  return fetch(buildUpstreamUrl(baseUrl, pathName), {
     method,
     headers: {
       Accept: 'application/json',
@@ -1778,22 +1778,86 @@ async function requestCodexProvider(account, method, pathName, body) {
     },
     body: body ? JSON.stringify(body) : undefined,
   });
+}
+
+async function parseCodexProviderResponse(response, pathName) {
   const raw = await response.text();
   const parsed = safeJsonParse(raw, null) || parseEventStreamPayload(raw);
   if (!response.ok) {
     const message =
       parsed?.error?.message ||
       parsed?.message ||
-      `codex provider upstream failed: status=${response.status}`;
+      classifyCodexProviderFailure(raw, response.status, pathName);
     throw new Error(message);
   }
   return parsed || { raw };
 }
 
+function classifyCodexProviderFailure(raw, status, pathName) {
+  const body = String(raw || '').trim();
+  if (status === 408) return `codex provider ${pathName} first-byte timeout`;
+  if (status === 504) return `codex provider ${pathName} upstream timeout`;
+  if (status >= 500) return `codex provider ${pathName} upstream failed: status=${status}`;
+  if (!body) return `codex provider ${pathName} failed: status=${status}`;
+  return `codex provider ${pathName} failed: status=${status}`;
+}
+
+function hasVisibleCodexResponseOutput(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  if (typeof payload.output_text === 'string' && payload.output_text.trim()) return true;
+  if (Array.isArray(payload.output)) {
+    return payload.output.some(
+      (item) =>
+        Array.isArray(item?.content) &&
+        item.content.some((content) => content?.type === 'output_text' && typeof content?.text === 'string' && content.text.trim()),
+    );
+  }
+  return false;
+}
+
+async function proxyCodexResponseStream(res, account, payload) {
+  const response = await requestCodexProvider(account, 'POST', '/v1/responses', payload);
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+  if (!response.ok) {
+    const raw = await response.text();
+    const parsed = safeJsonParse(raw, null) || parseEventStreamPayload(raw);
+    const message =
+      parsed?.error?.message ||
+      parsed?.message ||
+      classifyCodexProviderFailure(raw, response.status, '/v1/responses');
+    throw new Error(message);
+  }
+  if (contentType.includes('text/event-stream')) {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-key',
+    });
+    for await (const chunk of response.body) {
+      res.write(chunk);
+    }
+    res.end();
+    return;
+  }
+  const parsed = await parseCodexProviderResponse(response, '/v1/responses');
+  if (!hasVisibleCodexResponseOutput(parsed)) {
+    throw new Error('codex provider /v1/responses returned response shell without task output');
+  }
+  streamOpenAIResponse(res, parsed);
+}
+
+async function requestCodexProviderParsed(account, method, pathName, body) {
+  const response = await requestCodexProvider(account, method, pathName, body);
+  return parseCodexProviderResponse(response, pathName);
+}
+
 async function fetchCodexModels(accounts) {
   const account = findActiveAccount(accounts);
   if (!account) return [];
-  const payload = await requestCodexProvider(account, 'GET', '/v1/models', null);
+  const payload = await requestCodexProviderParsed(account, 'GET', '/v1/models', null);
   const models = Array.isArray(payload?.data)
     ? payload.data.map((item) => String(item?.id || '').trim()).filter(Boolean)
     : [];
@@ -1805,13 +1869,16 @@ async function invokeCodexResponse(accounts, payload) {
   const requestedModel = String(payload?.model || '').trim() || 'gpt-5.5';
   let responsePayload;
   try {
-    responsePayload = await requestCodexProvider(account, 'POST', '/v1/responses', payload);
+    responsePayload = await requestCodexProviderParsed(account, 'POST', '/v1/responses', payload);
   } catch (error) {
     markAccountRequestOutcome(account, error);
     throw error;
   }
   markAccountRequestOutcome(account, null);
   if (responsePayload && typeof responsePayload === 'object' && responsePayload.object === 'response') {
+    if (!hasVisibleCodexResponseOutput(responsePayload)) {
+      throw new Error('codex provider /v1/responses returned response shell without task output');
+    }
     return responsePayload;
   }
   const text =
@@ -2639,7 +2706,7 @@ async function invokeChatCompletion(accounts, payload) {
   } else if (provider === 'codex') {
     const account = findActiveAccount(accounts);
     try {
-      resp = await requestCodexProvider(account, 'POST', '/v1/chat/completions', payload);
+      resp = await requestCodexProviderParsed(account, 'POST', '/v1/chat/completions', payload);
     } catch (error) {
       markAccountRequestOutcome(account, error);
       throw error;
@@ -2929,21 +2996,34 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     try {
-      const response =
-        provider === 'kiro'
-          ? await invokeKiroResponse(accounts, payload)
-          : provider === 'codex'
-            ? await invokeCodexResponse(accounts, payload)
-          : provider === 'windsurf'
-            ? (() => {
-                throw new Error('Windsurf local_state_direct pool currently supports auth/import only; inference remains on your external Windsurf pool service');
-              })()
-          : await invokeCursorResponse(accounts, payload);
-      if (payload?.stream === true) {
-        streamOpenAIResponse(res, response);
+      if (provider === 'codex' && payload?.stream === true) {
+        const account = findActiveAccount(accounts);
+        try {
+          await proxyCodexResponseStream(res, account, payload);
+        } catch (error) {
+          markAccountRequestOutcome(account, error);
+          throw error;
+        }
+        markAccountRequestOutcome(account, null);
       } else {
-        json(res, 200, response);
+        const response =
+          provider === 'kiro'
+            ? await invokeKiroResponse(accounts, payload)
+            : provider === 'codex'
+              ? await invokeCodexResponse(accounts, payload)
+            : provider === 'windsurf'
+              ? (() => {
+                  throw new Error('Windsurf local_state_direct pool currently supports auth/import only; inference remains on your external Windsurf pool service');
+                })()
+            : await invokeCursorResponse(accounts, payload);
+        if (payload?.stream === true) {
+          streamOpenAIResponse(res, response);
+        } else {
+          json(res, 200, response);
+        }
+        return;
       }
+      return;
     } catch (error) {
       json(res, 503, {
         error: {

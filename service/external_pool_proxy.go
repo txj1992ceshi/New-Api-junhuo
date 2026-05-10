@@ -20,6 +20,8 @@ const (
 	ExternalPoolKindKiro     = "kiro"
 )
 
+const codexTaskProbeRequestTimeout = 45 * time.Second
+
 type ExternalPoolProxy struct {
 	Kind             string
 	DisplayName      string
@@ -383,46 +385,51 @@ func ProbeExternalPoolInference(ctx context.Context, channel *model.Channel, kin
 	}
 	inferenceMode := resolveExternalPoolInferenceMode(info, kind)
 	candidateModels := buildExternalPoolInferenceCandidates(ctx, channel, kind, status)
-	tryProbe := func(path string, payload map[string]interface{}) error {
+	tryProbe := func(path string, payload map[string]interface{}) ([]byte, error) {
 		body, marshalErr := common.Marshal(payload)
 		if marshalErr != nil {
-			return marshalErr
+			return nil, marshalErr
 		}
-		_, _, requestErr := proxyExternalPoolRequest(ctx, channel, proxy, http.MethodPost, path, body)
-		return requestErr
+		reqCtx := ctx
+		if kind == ExternalPoolKindCodex && (path == "/v1/responses" || path == "/v1/chat/completions") {
+			var cancel context.CancelFunc
+			reqCtx, cancel = context.WithTimeout(ctx, codexTaskProbeRequestTimeout)
+			defer cancel()
+		}
+		respBody, _, requestErr := proxyExternalPoolRequest(reqCtx, channel, proxy, http.MethodPost, path, body)
+		return respBody, requestErr
 	}
 	if len(candidateModels) == 0 {
 		candidateModels = []string{"gpt-5"}
 	}
 	lastErr := ""
 	for _, modelName := range candidateModels {
-		var err error
+		var (
+			respBody []byte
+			err      error
+		)
 		switch inferenceMode {
 		case "chat_completions":
-			err = tryProbe("/v1/chat/completions", map[string]interface{}{
-				"model": modelName,
-				"messages": []map[string]string{
-					{"role": "user", "content": "pool-probe"},
-				},
-			})
+			respBody, err = tryProbe("/v1/chat/completions", buildExternalPoolProbePayload(kind, modelName, "chat_completions"))
+			if err == nil {
+				err = validateExternalPoolProbeResponse(kind, "chat_completions", "/v1/chat/completions", respBody)
+			}
 		case "dual":
-			err = tryProbe("/v1/responses", map[string]interface{}{
-				"model": modelName,
-				"input": "pool-probe",
-			})
+			respBody, err = tryProbe("/v1/responses", buildExternalPoolProbePayload(kind, modelName, "responses"))
+			if err == nil {
+				err = validateExternalPoolProbeResponse(kind, "responses", "/v1/responses", respBody)
+			}
 			if err != nil && shouldFallbackToChatCompletions(err) {
-				err = tryProbe("/v1/chat/completions", map[string]interface{}{
-					"model": modelName,
-					"messages": []map[string]string{
-						{"role": "user", "content": "pool-probe"},
-					},
-				})
+				respBody, err = tryProbe("/v1/chat/completions", buildExternalPoolProbePayload(kind, modelName, "chat_completions"))
+				if err == nil {
+					err = validateExternalPoolProbeResponse(kind, "chat_completions", "/v1/chat/completions", respBody)
+				}
 			}
 		default:
-			err = tryProbe("/v1/responses", map[string]interface{}{
-				"model": modelName,
-				"input": "pool-probe",
-			})
+			respBody, err = tryProbe("/v1/responses", buildExternalPoolProbePayload(kind, modelName, "responses"))
+			if err == nil {
+				err = validateExternalPoolProbeResponse(kind, "responses", "/v1/responses", respBody)
+			}
 		}
 		if err == nil {
 			return true, true, ""
@@ -436,6 +443,97 @@ func ProbeExternalPoolInference(ctx context.Context, channel *model.Channel, kin
 		lastErr = "no_probe_candidate_succeeded"
 	}
 	return true, false, lastErr
+}
+
+func buildExternalPoolProbePayload(kind string, modelName string, mode string) map[string]interface{} {
+	if kind == ExternalPoolKindCodex {
+		taskPrompt := strings.Join([]string{
+			"You are validating a task-oriented responses channel.",
+			"Briefly summarize the relationship between these two files in exactly two bullets.",
+			"FileA: package config; func Load() string { return \"cfg\" }",
+			"FileB: package main; import \"config\"; func main() { _ = config.Load() }",
+		}, "\n")
+		if mode == "chat_completions" {
+			return map[string]interface{}{
+				"model": modelName,
+				"messages": []map[string]string{
+					{"role": "user", "content": taskPrompt},
+				},
+			}
+		}
+		return map[string]interface{}{
+			"model":  modelName,
+			"input":  taskPrompt,
+			"stream": true,
+		}
+	}
+	if mode == "chat_completions" {
+		return map[string]interface{}{
+			"model": modelName,
+			"messages": []map[string]string{
+				{"role": "user", "content": "pool-probe"},
+			},
+		}
+	}
+	return map[string]interface{}{
+		"model": modelName,
+		"input": "pool-probe",
+	}
+}
+
+func validateExternalPoolProbeResponse(kind string, mode string, path string, body []byte) error {
+	if kind != ExternalPoolKindCodex {
+		return nil
+	}
+	raw := strings.TrimSpace(string(body))
+	if raw == "" {
+		return fmt.Errorf("%s empty response body", path)
+	}
+	if mode == "chat_completions" {
+		if strings.Contains(raw, "\"choices\"") && strings.Contains(raw, "\"content\"") {
+			return nil
+		}
+		return fmt.Errorf("%s returned no chat choices", path)
+	}
+	if strings.Contains(raw, "event: response.completed") {
+		if strings.Contains(raw, "event: response.output_text.delta") ||
+			strings.Contains(raw, "\"output_text\"") ||
+			strings.Contains(raw, "event: response.output_item.done") {
+			return nil
+		}
+		return fmt.Errorf("%s completed without visible output", path)
+	}
+	if strings.Contains(raw, "\"object\":\"response\"") {
+		if strings.Contains(raw, "\"output_text\":\"") {
+			return nil
+		}
+		if strings.Contains(raw, "\"output\":[") && !strings.Contains(raw, "\"output\":[]") {
+			return nil
+		}
+		return fmt.Errorf("%s returned response shell without task output", path)
+	}
+	return fmt.Errorf("%s missing response.completed", path)
+}
+
+func filterCodexProbeCandidates(candidates []string) []string {
+	allowed := []string{"gpt-5.5", "gpt-5.4"}
+	if len(candidates) == 0 {
+		return allowed
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		seen[strings.TrimSpace(candidate)] = struct{}{}
+	}
+	filtered := make([]string, 0, len(allowed))
+	for _, modelName := range allowed {
+		if _, ok := seen[modelName]; ok {
+			filtered = append(filtered, modelName)
+		}
+	}
+	if len(filtered) > 0 {
+		return filtered
+	}
+	return allowed
 }
 
 func buildExternalPoolInferenceCandidates(ctx context.Context, channel *model.Channel, kind string, status *ExternalPoolStatus) []string {
@@ -472,13 +570,16 @@ func buildExternalPoolInferenceCandidates(ctx context.Context, channel *model.Ch
 	}
 	switch kind {
 	case ExternalPoolKindCodex:
-		appendModels([]string{"gpt-5.5", "gpt-5.4", "gpt-5", "gpt-5-mini", "o3-mini"})
+		appendModels([]string{"gpt-5.5", "gpt-5.4"})
 	case ExternalPoolKindCursor:
 		appendModels([]string{"default", "auto", "gpt-4.1-mini", "gpt-4o-mini", "gpt-5-mini"})
 	case ExternalPoolKindKiro:
 		appendModels([]string{"auto", "claude-sonnet-4.5", "claude-sonnet-4", "claude-haiku-4.5"})
 	case ExternalPoolKindWindsurf:
 		appendModels([]string{"gpt-4o-mini", "gpt-4.1-mini", "gpt-5-mini", "gemini-2.5-flash", "claude-4.5-haiku", "claude-sonnet-4.6"})
+	}
+	if kind == ExternalPoolKindCodex {
+		return filterCodexProbeCandidates(candidates)
 	}
 	return candidates
 }

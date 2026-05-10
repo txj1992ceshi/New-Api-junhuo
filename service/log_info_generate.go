@@ -96,6 +96,12 @@ func appendExternalPoolAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayI
 	}
 	if strategy, ok := otherInfo[kind+"_pool_auth_strategy"].(string); ok && strings.TrimSpace(strategy) != "" {
 		adminInfo["external_pool_auth_strategy"] = strings.TrimSpace(strategy)
+		if kind == ExternalPoolKindCodex {
+			adminInfo["codex_provider_bridge_mode"] = strings.TrimSpace(strategy)
+		}
+	}
+	if kind == ExternalPoolKindCodex {
+		adminInfo["codex_task_contract_models"] = []string{"gpt-5.5", "gpt-5.4"}
 	}
 }
 
@@ -232,11 +238,11 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 		if strategy := common.GetContextKeyString(ctx, constant.ContextKeyResponsesCompatToolStrategy); strategy != "" {
 			adminInfo["antigravity_responses_tool_strategy"] = strategy
 		}
-	if relayInfo != nil {
-		adminInfo["antigravity_responses_request_type"] = antigravityResponsesRequestType(relayInfo.RelayMode)
-		if relayInfo.UpstreamModelName != "" {
-			adminInfo["antigravity_responses_upstream_model"] = relayInfo.UpstreamModelName
-		}
+		if relayInfo != nil {
+			adminInfo["antigravity_responses_request_type"] = antigravityResponsesRequestType(relayInfo.RelayMode)
+			if relayInfo.UpstreamModelName != "" {
+				adminInfo["antigravity_responses_upstream_model"] = relayInfo.UpstreamModelName
+			}
 		}
 	}
 	AppendAntigravityResponsesStreamAdminInfo(ctx, adminInfo)

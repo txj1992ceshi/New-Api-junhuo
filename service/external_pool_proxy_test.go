@@ -267,6 +267,37 @@ func TestShouldTryNextInferenceModelOnTransientErrors(t *testing.T) {
 	}
 }
 
+func TestFilterCodexProbeCandidatesKeepsStableContractOnly(t *testing.T) {
+	input := []string{"gpt-5.5", "gpt-5.3-codex", "gpt-5.4", "codex-mini"}
+	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, filterCodexProbeCandidates(input))
+	require.Equal(t, []string{"gpt-5.5", "gpt-5.4"}, filterCodexProbeCandidates(nil))
+}
+
+func TestValidateExternalPoolProbeResponseForCodexResponses(t *testing.T) {
+	okBody := []byte(strings.Join([]string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+		"",
+		"event: response.output_text.delta",
+		`data: {"type":"response.output_text.delta","delta":"- FileB imports FileA"}`,
+		"",
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"resp_1","output_text":"- FileB imports FileA"}}`,
+		"",
+		"data: [DONE]",
+		"",
+	}, "\n"))
+	require.NoError(t, validateExternalPoolProbeResponse(ExternalPoolKindCodex, "responses", "/v1/responses", okBody))
+
+	err := validateExternalPoolProbeResponse(ExternalPoolKindCodex, "responses", "/v1/responses", []byte("event: response.created\n"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "missing response.completed")
+
+	err = validateExternalPoolProbeResponse(ExternalPoolKindCodex, "responses", "/v1/responses", []byte(`{"object":"response","output":[]}`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "without task output")
+}
+
 func TestStartExternalPoolAuthFallsBackForLocalStateDirect404(t *testing.T) {
 	db := setupExternalPoolProxyTestDB(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
