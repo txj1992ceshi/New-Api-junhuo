@@ -38,12 +38,24 @@ type ExternalPoolProxy struct {
 }
 
 type ExternalPoolStatus struct {
-	Authenticated bool     `json:"authenticated"`
-	Total         int      `json:"total"`
-	Active        int      `json:"active"`
-	Error         int      `json:"error"`
-	FetchedAt     string   `json:"fetched_at"`
-	Models        []string `json:"models,omitempty"`
+	Provider        string                    `json:"provider,omitempty"`
+	LicenseStatus   string                    `json:"license_status,omitempty"`
+	Authenticated   bool                      `json:"authenticated"`
+	Total           int                       `json:"total"`
+	Active          int                       `json:"active"`
+	Error           int                       `json:"error"`
+	FetchedAt       string                    `json:"fetched_at"`
+	Models          []string                  `json:"models,omitempty"`
+	Bridge          *ExternalPoolBridgeStatus `json:"bridge,omitempty"`
+	BridgeStatus    string                    `json:"bridge_status,omitempty"`
+	BridgeBaseURL   string                    `json:"bridge_base_url,omitempty"`
+	BridgeLastError string                    `json:"bridge_last_error,omitempty"`
+}
+
+type ExternalPoolBridgeStatus struct {
+	Status    string `json:"status,omitempty"`
+	BaseURL   string `json:"base_url,omitempty"`
+	LastError string `json:"last_error,omitempty"`
 }
 
 type ExternalPoolAccount struct {
@@ -305,6 +317,24 @@ func classifyExternalPoolSummary(status *ExternalPoolStatus, accounts []External
 	if err != nil {
 		return classifyExternalPoolUpstreamError(err)
 	}
+	if status != nil {
+		switch strings.ToLower(strings.TrimSpace(status.LicenseStatus)) {
+		case "expired":
+			return ExternalPoolDiagnosis{Availability: "unavailable", Diagnosis: "sidecar_expired"}
+		case "invalid", "unavailable":
+			return ExternalPoolDiagnosis{Availability: "unavailable", Diagnosis: "sidecar_unactivated"}
+		}
+		switch strings.ToLower(strings.TrimSpace(status.BridgeStatus)) {
+		case "unreachable", "error", "down":
+			return ExternalPoolDiagnosis{Availability: "unavailable", Diagnosis: "bridge_unreachable"}
+		}
+		if status.Authenticated && status.Active <= 0 {
+			return ExternalPoolDiagnosis{Availability: "unavailable", Diagnosis: "no_active_accounts"}
+		}
+		if !status.Authenticated && strings.EqualFold(strings.TrimSpace(status.LicenseStatus), "activated") {
+			return ExternalPoolDiagnosis{Availability: "degraded", Diagnosis: "provider_not_ready"}
+		}
+	}
 	switch classifyExternalPoolState(status, accounts) {
 	case "ready":
 		return ExternalPoolDiagnosis{Availability: "available", Diagnosis: "ready"}
@@ -336,6 +366,17 @@ func ProbeExternalPoolInference(ctx context.Context, channel *model.Channel, kin
 	// If not authenticated (or no active inventory), inference probe is not meaningful.
 	if status == nil || !status.Authenticated {
 		return false, false, "not_authenticated"
+	}
+	if status != nil {
+		if licenseStatus := strings.ToLower(strings.TrimSpace(status.LicenseStatus)); licenseStatus != "" && licenseStatus != "activated" {
+			if licenseStatus == "expired" {
+				return false, false, "sidecar_expired"
+			}
+			return false, false, "sidecar_unactivated"
+		}
+		if bridgeStatus := strings.ToLower(strings.TrimSpace(status.BridgeStatus)); bridgeStatus != "" && bridgeStatus != "ready" {
+			return false, false, "bridge_unreachable"
+		}
 	}
 	if status.Active <= 0 {
 		return false, false, "no_active_accounts"
@@ -1010,16 +1051,67 @@ func parseExternalPoolStatus(body []byte) (*ExternalPoolStatus, error) {
 	if len(models) == 0 {
 		models = getStringSliceFromMap(root, "models", "available_models")
 	}
+	provider := getStringFromMap(payload, "provider")
+	if provider == "" {
+		provider = getStringFromMap(root, "provider")
+	}
+	licenseStatus := getStringFromMap(payload, "license_status")
+	if licenseStatus == "" {
+		licenseStatus = getStringFromMap(root, "license_status")
+	}
+	var bridge *ExternalPoolBridgeStatus
+	if rawBridge, ok := payload["bridge"].(map[string]interface{}); ok && rawBridge != nil {
+		bridge = &ExternalPoolBridgeStatus{
+			Status:    getStringFromMap(rawBridge, "status"),
+			BaseURL:   getStringFromMap(rawBridge, "base_url", "baseUrl"),
+			LastError: getStringFromMap(rawBridge, "last_error", "lastError"),
+		}
+	} else if rawBridge, ok := root["bridge"].(map[string]interface{}); ok && rawBridge != nil {
+		bridge = &ExternalPoolBridgeStatus{
+			Status:    getStringFromMap(rawBridge, "status"),
+			BaseURL:   getStringFromMap(rawBridge, "base_url", "baseUrl"),
+			LastError: getStringFromMap(rawBridge, "last_error", "lastError"),
+		}
+	}
+	bridgeStatus := getStringFromMap(payload, "bridge_status")
+	if bridgeStatus == "" {
+		bridgeStatus = getStringFromMap(root, "bridge_status")
+	}
+	bridgeBaseURL := getStringFromMap(payload, "bridge_base_url")
+	if bridgeBaseURL == "" {
+		bridgeBaseURL = getStringFromMap(root, "bridge_base_url")
+	}
+	bridgeLastError := getStringFromMap(payload, "bridge_last_error")
+	if bridgeLastError == "" {
+		bridgeLastError = getStringFromMap(root, "bridge_last_error")
+	}
+	if bridge != nil {
+		if bridgeStatus == "" {
+			bridgeStatus = bridge.Status
+		}
+		if bridgeBaseURL == "" {
+			bridgeBaseURL = bridge.BaseURL
+		}
+		if bridgeLastError == "" {
+			bridgeLastError = bridge.LastError
+		}
+	}
 	if total == 0 && active > 0 {
 		total = active + errCount
 	}
 	return &ExternalPoolStatus{
-		Authenticated: authenticated,
-		Total:         total,
-		Active:        active,
-		Error:         errCount,
-		Models:        models,
-		FetchedAt:     time.Now().Format(time.RFC3339),
+		Provider:        provider,
+		LicenseStatus:   licenseStatus,
+		Authenticated:   authenticated,
+		Total:           total,
+		Active:          active,
+		Error:           errCount,
+		Models:          models,
+		FetchedAt:       time.Now().Format(time.RFC3339),
+		Bridge:          bridge,
+		BridgeStatus:    bridgeStatus,
+		BridgeBaseURL:   bridgeBaseURL,
+		BridgeLastError: bridgeLastError,
 	}, nil
 }
 

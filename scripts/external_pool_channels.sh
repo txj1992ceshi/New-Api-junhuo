@@ -80,6 +80,9 @@ build_other_info_json() {
   local tunnel_hint="${13}"
   local pool_mode="${14}"
   local auth_strategy="${15}"
+  local sidecar_enabled="${16}"
+  local sidecar_provider="${17}"
+  local probe_inference="${18}"
 
   printf '{'
   printf '"%s_pool_proxy":true' "$kind"
@@ -110,6 +113,19 @@ build_other_info_json() {
   fi
   if [[ -n "$auth_strategy" ]]; then
     printf ',"%s_pool_auth_strategy":"%s"' "$kind" "$(json_escape "$auth_strategy")"
+  fi
+  if [[ "$sidecar_enabled" == "true" ]]; then
+    printf ',"cursorpro4_sidecar":true'
+  fi
+  if [[ -n "$sidecar_provider" ]]; then
+    printf ',"cursorpro4_provider":"%s"' "$(json_escape "$sidecar_provider")"
+  fi
+  if [[ -n "$probe_inference" ]]; then
+    if [[ "$probe_inference" == "true" ]]; then
+      printf ',"cursorpro4_probe_inference":true'
+    else
+      printf ',"cursorpro4_probe_inference":false'
+    fi
   fi
   printf '}'
 }
@@ -162,9 +178,12 @@ upsert_channel() {
   local auth_strategy="${20}"
   local test_model="${21}"
   local settings_json="${22}"
+  local sidecar_enabled="${23}"
+  local sidecar_provider="${24}"
+  local probe_inference="${25}"
 
   local other_info
-  other_info="$(build_other_info_json "$kind" "$base_url" "$api_key" "$status_path" "$accounts_path" "$dashboard_path" "$authorize_url" "$authorize_hint" "$auth_start_path" "$auth_complete_path" "$auth_header" "$auth_scheme" "$tunnel_hint" "$pool_mode" "$auth_strategy")"
+  other_info="$(build_other_info_json "$kind" "$base_url" "$api_key" "$status_path" "$accounts_path" "$dashboard_path" "$authorize_url" "$authorize_hint" "$auth_start_path" "$auth_complete_path" "$auth_header" "$auth_scheme" "$tunnel_hint" "$pool_mode" "$auth_strategy" "$sidecar_enabled" "$sidecar_provider" "$probe_inference")"
 
   local id
   id="$(sql_scalar "SELECT id FROM channels WHERE name = $(sql_quote "$name") LIMIT 1;")"
@@ -297,6 +316,8 @@ run_check() {
   print_check_line "CODEX_POOL_AUTHORIZE_URL" "${CODEX_POOL_AUTHORIZE_URL:-missing}"
   print_check_line "CODEX_POOL_MODE" "${CODEX_POOL_MODE:-provider_bridge}"
   print_check_line "CODEX_POOL_AUTH_STRATEGY" "${CODEX_POOL_AUTH_STRATEGY:-provider_bridge}"
+  print_check_line "CURSORPRO4_CHANNEL_PREFIX" "${CURSORPRO4_CHANNEL_PREFIX:-disabled}"
+  print_check_line "CURSORPRO4_PROBE_INFERENCE" "${CURSORPRO4_PROBE_INFERENCE:-true}"
 }
 
 run_apply() {
@@ -322,22 +343,34 @@ run_apply() {
   local codex_models="${CODEX_MODELS:-gpt-5.5,gpt-5.4,codex-default,codex-gpt5,codex-gpt5-mini,codex-gpt54,codex-o3-mini}"
 
   local cursor_settings windsurf_settings kiro_settings codex_settings
+  local cursorpro4_enabled="${CURSORPRO4_ENABLED:-true}"
+  local cursorpro4_probe="${CURSORPRO4_PROBE_INFERENCE:-true}"
+  local cursor_name_default="cursor-pool-proxy"
+  local windsurf_name_default="windsurf-pool-proxy"
+  local kiro_name_default="kiro-pool-proxy"
+  local codex_name_default="codex-pool-proxy"
+  if [[ "${CURSORPRO4_CHANNEL_PREFIX:-}" == "cursorpro4" ]]; then
+    cursor_name_default="cursorpro4-cursor-pool-proxy"
+    windsurf_name_default="cursorpro4-windsurf-pool-proxy"
+    kiro_name_default="cursorpro4-kiro-pool-proxy"
+    codex_name_default="cursorpro4-codex-pool-proxy"
+  fi
   cursor_settings="$(build_settings_json \
     "${CURSOR_PUBLIC_MODELS:-$contract_models}" \
     "${CURSOR_RESPONSES_MODEL_MAPPING:-{\"gpt-5.5\":\"default\",\"gpt-5.4\":\"gpt-5-mini\",\"cursor-default\":\"default\",\"cursor-gpt5-mini\":\"gpt-5-mini\",\"cursor-gpt4o-mini\":\"gpt-4o-mini\"}}")"
   windsurf_settings="$(build_settings_json \
     "${WINDSURF_PUBLIC_MODELS:-$contract_models}" \
-    "${WINDSURF_RESPONSES_MODEL_MAPPING:-{\"gpt-5.5\":\"gpt-5-mini\",\"gpt-5.4\":\"gemini-2.5-flash\"}}")"
+    "${WINDSURF_RESPONSES_MODEL_MAPPING:-{\"gpt-5.5\":\"gemini-2.5-flash\",\"gpt-5.4\":\"gpt-4.1-mini\"}}")"
   kiro_settings="$(build_settings_json \
     "${KIRO_PUBLIC_MODELS:-$contract_models}" \
-    "${KIRO_RESPONSES_MODEL_MAPPING:-{\"gpt-5.5\":\"claude-sonnet-4.5\",\"gpt-5.4\":\"claude-haiku-4.5\",\"kiro-sonnet\":\"claude-sonnet-4.5\",\"kiro-haiku\":\"claude-haiku-4.5\",\"kiro-deepseek\":\"deepseek-3.2\",\"kiro-auto\":\"auto\"}}")"
+    "${KIRO_RESPONSES_MODEL_MAPPING:-{\"gpt-5.5\":\"deepseek-3.2\",\"gpt-5.4\":\"claude-sonnet-4.5\",\"kiro-sonnet\":\"claude-sonnet-4.5\",\"kiro-haiku\":\"claude-haiku-4.5\",\"kiro-deepseek\":\"deepseek-3.2\",\"kiro-auto\":\"deepseek-3.2\"}}")"
   codex_settings="$(build_settings_json \
     "${CODEX_PUBLIC_MODELS:-$contract_models}" \
     "${CODEX_RESPONSES_MODEL_MAPPING:-{\"gpt-5.5\":\"gpt-5.5\",\"gpt-5.4\":\"gpt-5.4\",\"codex-default\":\"gpt-5.4\",\"codex-gpt5\":\"gpt-5\",\"codex-gpt5-mini\":\"gpt-5-mini\",\"codex-gpt54\":\"gpt-5.4\",\"codex-o3-mini\":\"o3-mini\"}}")"
 
   upsert_channel \
     "cursor" \
-    "${CURSOR_CHANNEL_NAME:-cursor-pool-proxy}" \
+    "${CURSOR_CHANNEL_NAME:-$cursor_name_default}" \
     "$CURSOR_POOL_BASE_URL" \
     "$CURSOR_POOL_API_KEY" \
     "$cursor_models" \
@@ -357,9 +390,12 @@ run_apply() {
     "${CURSOR_POOL_MODE:-local_state_direct}" \
     "${CURSOR_POOL_AUTH_STRATEGY:-local_state_direct}" \
     "${CURSOR_TEST_MODEL:-gpt-5.5}" \
-    "$cursor_settings"
+    "$cursor_settings" \
+    "$cursorpro4_enabled" \
+    "cursor" \
+    "$cursorpro4_probe"
   sync_channel_abilities \
-    "${CURSOR_CHANNEL_NAME:-cursor-pool-proxy}" \
+    "${CURSOR_CHANNEL_NAME:-$cursor_name_default}" \
     "${CURSOR_GROUP:-default}" \
     "$cursor_models" \
     "${CURSOR_PRIORITY:-80}" \
@@ -367,7 +403,7 @@ run_apply() {
 
   upsert_channel \
     "windsurf" \
-    "${WINDSURF_CHANNEL_NAME:-windsurf-pool-proxy}" \
+    "${WINDSURF_CHANNEL_NAME:-$windsurf_name_default}" \
     "$WINDSURF_POOL_BASE_URL" \
     "$WINDSURF_POOL_API_KEY" \
     "$windsurf_models" \
@@ -387,9 +423,12 @@ run_apply() {
     "${WINDSURF_POOL_MODE:-external_managed}" \
     "${WINDSURF_POOL_AUTH_STRATEGY:-local_state_direct}" \
     "${WINDSURF_TEST_MODEL:-gpt-5.5}" \
-    "$windsurf_settings"
+    "$windsurf_settings" \
+    "$cursorpro4_enabled" \
+    "windsurf" \
+    "$cursorpro4_probe"
   sync_channel_abilities \
-    "${WINDSURF_CHANNEL_NAME:-windsurf-pool-proxy}" \
+    "${WINDSURF_CHANNEL_NAME:-$windsurf_name_default}" \
     "${WINDSURF_GROUP:-default}" \
     "$windsurf_models" \
     "${WINDSURF_PRIORITY:-70}" \
@@ -397,7 +436,7 @@ run_apply() {
 
   upsert_channel \
     "kiro" \
-    "${KIRO_CHANNEL_NAME:-kiro-pool-proxy}" \
+    "${KIRO_CHANNEL_NAME:-$kiro_name_default}" \
     "$KIRO_POOL_BASE_URL" \
     "$KIRO_POOL_API_KEY" \
     "$kiro_models" \
@@ -416,10 +455,13 @@ run_apply() {
     "${KIRO_POOL_TUNNEL_HINT:-}" \
     "${KIRO_POOL_MODE:-external_managed}" \
     "${KIRO_POOL_AUTH_STRATEGY:-local_state_direct}" \
-    "${KIRO_TEST_MODEL:-gpt-5.5}" \
-    "$kiro_settings"
+    "${KIRO_TEST_MODEL:-deepseek-3.2}" \
+    "$kiro_settings" \
+    "$cursorpro4_enabled" \
+    "kiro" \
+    "$cursorpro4_probe"
   sync_channel_abilities \
-    "${KIRO_CHANNEL_NAME:-kiro-pool-proxy}" \
+    "${KIRO_CHANNEL_NAME:-$kiro_name_default}" \
     "${KIRO_GROUP:-default}" \
     "$kiro_models" \
     "${KIRO_PRIORITY:-60}" \
@@ -427,7 +469,7 @@ run_apply() {
 
   upsert_channel \
     "codex" \
-    "${CODEX_CHANNEL_NAME:-codex-pool-proxy}" \
+    "${CODEX_CHANNEL_NAME:-$codex_name_default}" \
     "$CODEX_POOL_BASE_URL" \
     "$CODEX_POOL_API_KEY" \
     "$codex_models" \
@@ -447,9 +489,12 @@ run_apply() {
     "${CODEX_POOL_MODE:-provider_bridge}" \
     "${CODEX_POOL_AUTH_STRATEGY:-provider_bridge}" \
     "${CODEX_TEST_MODEL:-gpt-5.5}" \
-    "$codex_settings"
+    "$codex_settings" \
+    "$cursorpro4_enabled" \
+    "codex" \
+    "$cursorpro4_probe"
   sync_channel_abilities \
-    "${CODEX_CHANNEL_NAME:-codex-pool-proxy}" \
+    "${CODEX_CHANNEL_NAME:-$codex_name_default}" \
     "${CODEX_GROUP:-default}" \
     "$codex_models" \
     "${CODEX_PRIORITY:-50}" \

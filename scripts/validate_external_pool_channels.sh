@@ -41,6 +41,32 @@ print_line() {
   printf '%-22s %s\n' "$label" "$value"
 }
 
+extract_status_field() {
+  local field="$1"
+  local body="$2"
+  python3 - "$field" "$body" <<'PY'
+import json, sys
+field = sys.argv[1]
+raw = sys.argv[2]
+try:
+    payload = json.loads(raw)
+except Exception:
+    print("")
+    raise SystemExit(0)
+root = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
+if not isinstance(root, dict):
+    print("")
+    raise SystemExit(0)
+value = root.get(field)
+if isinstance(value, (dict, list)):
+    print(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+elif value is None:
+    print("")
+else:
+    print(str(value))
+PY
+}
+
 http_probe() {
   local method="$1"
   local url="$2"
@@ -451,12 +477,26 @@ validate_channel() {
   IFS=$'\t' read -r id channel_name base_url api_key status models other_info settings test_model <<< "$row"
   local auth_header="Authorization: Bearer $api_key"
   local kind
-  case "$channel_name" in
-    codex-*) kind="codex" ;;
-    cursor-*) kind="cursor" ;;
-    kiro-*) kind="kiro" ;;
-    *) kind="windsurf" ;;
-  esac
+  kind="$(python3 - "$other_info" <<'PY'
+import json, sys
+raw = sys.argv[1]
+try:
+    payload = json.loads(raw) if raw else {}
+except Exception:
+    payload = {}
+for key in ("cursorpro4_provider", "codex_pool_proxy", "cursor_pool_proxy", "kiro_pool_proxy", "windsurf_pool_proxy"):
+    if key == "cursorpro4_provider":
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            print(value.strip())
+            raise SystemExit(0)
+        continue
+    if payload.get(key) is True:
+        print(key.replace("_pool_proxy", ""))
+        raise SystemExit(0)
+print("windsurf")
+PY
+)"
   local models_timeout="$MODELS_TIMEOUT"
   if [[ "$kind" == "cursor" || "$kind" == "codex" ]]; then
     models_timeout="$CURSOR_MODELS_TIMEOUT"
@@ -470,12 +510,45 @@ validate_channel() {
   print_line "api_key" "$(mask_value "$api_key")"
   print_line "models" "$models"
 
+  local health_result health_code health_body
+  health_result="$(http_probe GET "$base_url/health" "$auth_header" "$STATUS_TIMEOUT")"
+  health_code="$(printf '%s\n' "$health_result" | sed -n '1p')"
+  health_body="$(printf '%s\n' "$health_result" | sed -n '2,$p')"
+  print_line "health_http" "$health_code"
+  if [[ "$health_code" == "200" ]]; then
+    print_line "health_license" "$(extract_status_field "license_status" "$health_body")"
+    print_line "health_bridge" "$(extract_status_field "bridge" "$health_body")"
+  fi
+
   local status_result status_code status_body
   status_result="$(http_probe GET "$base_url/auth/status" "$auth_header" "$STATUS_TIMEOUT")"
   status_code="$(printf '%s\n' "$status_result" | sed -n '1p')"
   status_body="$(printf '%s\n' "$status_result" | sed -n '2,$p')"
   print_line "status_http" "$status_code"
   print_line "status_body" "$status_body"
+  if [[ "$status_code" == "200" ]]; then
+    print_line "license_status" "$(extract_status_field "license_status" "$status_body")"
+    print_line "bridge_status" "$(python3 - "$(extract_status_field "bridge" "$status_body")" <<'PY'
+import json, sys
+raw = sys.argv[1]
+try:
+    payload = json.loads(raw) if raw else {}
+except Exception:
+    payload = {}
+print(str(payload.get("status", "")))
+PY
+)"
+    print_line "bridge_error" "$(python3 - "$(extract_status_field "bridge" "$status_body")" <<'PY'
+import json, sys
+raw = sys.argv[1]
+try:
+    payload = json.loads(raw) if raw else {}
+except Exception:
+    payload = {}
+print(str(payload.get("last_error", "")))
+PY
+)"
+  fi
 
   local models_result models_code models_body
   models_result="$(http_probe GET "$base_url/v1/models" "$auth_header" "$models_timeout")"
@@ -583,7 +656,20 @@ PY
   print_line "inference_body" "$response_body"
 }
 
-validate_channel "cursor-pool-proxy" "${CURSOR_SMOKE_MODEL:-}"
-validate_channel "windsurf-pool-proxy" "${WINDSURF_SMOKE_MODEL:-}"
-validate_channel "kiro-pool-proxy" "${KIRO_SMOKE_MODEL:-}"
-validate_channel "codex-pool-proxy" "${CODEX_SMOKE_MODEL:-}"
+CHANNEL_PREFIX="${CURSORPRO4_CHANNEL_PREFIX:-}"
+CURSOR_CHANNEL_NAME_DEFAULT="cursor-pool-proxy"
+WINDSURF_CHANNEL_NAME_DEFAULT="windsurf-pool-proxy"
+KIRO_CHANNEL_NAME_DEFAULT="kiro-pool-proxy"
+CODEX_CHANNEL_NAME_DEFAULT="codex-pool-proxy"
+
+if [[ "$CHANNEL_PREFIX" == "cursorpro4" ]]; then
+  CURSOR_CHANNEL_NAME_DEFAULT="cursorpro4-cursor-pool-proxy"
+  WINDSURF_CHANNEL_NAME_DEFAULT="cursorpro4-windsurf-pool-proxy"
+  KIRO_CHANNEL_NAME_DEFAULT="cursorpro4-kiro-pool-proxy"
+  CODEX_CHANNEL_NAME_DEFAULT="cursorpro4-codex-pool-proxy"
+fi
+
+validate_channel "${CURSOR_CHANNEL_NAME:-$CURSOR_CHANNEL_NAME_DEFAULT}" "${CURSOR_SMOKE_MODEL:-}"
+validate_channel "${WINDSURF_CHANNEL_NAME:-$WINDSURF_CHANNEL_NAME_DEFAULT}" "${WINDSURF_SMOKE_MODEL:-}"
+validate_channel "${KIRO_CHANNEL_NAME:-$KIRO_CHANNEL_NAME_DEFAULT}" "${KIRO_SMOKE_MODEL:-}"
+validate_channel "${CODEX_CHANNEL_NAME:-$CODEX_CHANNEL_NAME_DEFAULT}" "${CODEX_SMOKE_MODEL:-}"

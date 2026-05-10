@@ -74,6 +74,8 @@ watch_windsurf() {
       source ./.env
       set +a
       export PORT=3003
+      export HOST="${HOST:-${POOL_LISTEN_HOST:-127.0.0.1}}"
+      export BIND_HOST="${BIND_HOST:-${HOST}}"
       export API_KEY='demo-windsurf-key'
       exec node src/index.js
     ) >>"${out_file}" 2>>"${err_file}" || true

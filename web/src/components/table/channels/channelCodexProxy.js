@@ -1,3 +1,22 @@
+/*
+Copyright (C) 2025 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+
 export const parseChannelOtherInfo = (record) => {
   if (!record?.other_info) {
     return {};
@@ -187,26 +206,34 @@ export const getExternalPoolAvailabilityRank = (record) => {
   switch (availability) {
     case 'unavailable':
       switch (diagnosis) {
-        case 'auth_rejected':
+        case 'sidecar_expired':
           return 0;
-        case 'upstream_path_not_found':
+        case 'sidecar_unactivated':
           return 1;
-        case 'upstream_unreachable':
+        case 'bridge_unreachable':
           return 2;
-        case 'upstream_server_error':
+        case 'auth_rejected':
           return 3;
-        case 'empty_pool':
+        case 'upstream_path_not_found':
           return 4;
-        default:
+        case 'upstream_unreachable':
           return 5;
+        case 'upstream_server_error':
+          return 6;
+        case 'empty_pool':
+        case 'no_active_accounts':
+          return 7;
+        default:
+          return 8;
       }
     case 'degraded':
-      if (diagnosis === 'rate_limited') return 6;
-      return 7;
+      if (diagnosis === 'rate_limited') return 9;
+      if (diagnosis === 'provider_not_ready') return 10;
+      return 11;
     case 'available':
-      return 8;
+      return 12;
     default:
-      return 9;
+      return 13;
   }
 };
 
@@ -233,9 +260,9 @@ export const matchExternalPoolQuickFilter = (record, filter) => {
     case 'auth_rejected':
       return diagnosis === 'auth_rejected';
     case 'empty_pool':
-      return diagnosis === 'empty_pool';
+      return diagnosis === 'empty_pool' || diagnosis === 'no_active_accounts';
     case 'upstream_unreachable':
-      return diagnosis === 'upstream_unreachable';
+      return diagnosis === 'upstream_unreachable' || diagnosis === 'bridge_unreachable';
     case 'upstream_path_not_found':
       return diagnosis === 'upstream_path_not_found';
     case 'rate_limited':

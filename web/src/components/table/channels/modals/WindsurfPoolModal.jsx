@@ -1,3 +1,22 @@
+/*
+Copyright (C) 2025 QuantumNous
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as
+published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+For commercial licensing, please contact support@quantumnous.com
+*/
+
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import {
@@ -115,6 +134,34 @@ const inferPoolDiagnosis = (statusData, accountsData, t) => {
       text: tt('认证通过，但当前推理接口不可用。优先检查渠道 inference mode 与池服务开放路径是否一致。'),
     };
   }
+  if (diagnosis === 'sidecar_unactivated') {
+    return {
+      color: 'orange',
+      title: tt('优先排查'),
+      text: tt('CursorPro4 sidecar 尚未激活。先完成 sidecar license 激活，再继续补池或推理验证。'),
+    };
+  }
+  if (diagnosis === 'sidecar_expired') {
+    return {
+      color: 'red',
+      title: tt('优先排查'),
+      text: tt('CursorPro4 sidecar license 已过期。先恢复 license，再继续授权和验池。'),
+    };
+  }
+  if (diagnosis === 'bridge_unreachable') {
+    return {
+      color: 'red',
+      title: tt('优先排查'),
+      text: tt('sidecar 已授权，但当前 provider bridge 不可达。优先检查 bridge 进程、开放路径和本地端口。'),
+    };
+  }
+  if (diagnosis === 'provider_not_ready') {
+    return {
+      color: 'yellow',
+      title: tt('当前判断'),
+      text: tt('sidecar 已激活，但当前还没有完成授权入池。先执行授权，再回来看账号数和可用数。'),
+    };
+  }
   if (diagnosis === 'unprobed' || availability === 'unprobed') {
     return {
       color: 'grey',
@@ -154,6 +201,28 @@ const inferPoolDiagnosis = (statusData, accountsData, t) => {
   }
 
   if (state === 'upstream_error') {
+    if (
+      upstreamError.includes('too many requests') ||
+      upstreamError.includes('rate limit') ||
+      upstreamError.includes('rate_limited')
+    ) {
+      return {
+        color: 'yellow',
+        title: tt('优先排查'),
+        text: tt('当前更像是上游限流，不是断连。先降低测试频率、等待额度窗口恢复，或切换到更稳的模型。'),
+      };
+    }
+    if (
+      upstreamError.includes('model_deprecated') ||
+      upstreamError.includes('已被') ||
+      upstreamError.includes('不再可用')
+    ) {
+      return {
+        color: 'yellow',
+        title: tt('优先排查'),
+        text: tt('当前更像是模型已废弃，不是断连。先改 test_model 或 responses_model_mapping，再继续测试。'),
+      };
+    }
     if (
       upstreamError.includes('401') ||
       upstreamError.includes('403') ||

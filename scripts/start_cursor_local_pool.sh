@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 
 export PROVIDER=cursor
 export PORT="${PORT:-3401}"
+export POOL_LISTEN_HOST="${POOL_LISTEN_HOST:-127.0.0.1}"
 export API_KEY="${API_KEY:-demo-cursor-key}"
 export DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-demo-cursor-dashboard}"
 export DATA_DIR="${DATA_DIR:-$ROOT_DIR/runtime/local-pools}"
@@ -32,5 +33,7 @@ export CURSOR_CONNECT_TEXT_PATHS="${CURSOR_CONNECT_TEXT_PATHS:-output_text,inter
 export CURSOR_CONNECT_EXTRA_HEADERS_JSON="${CURSOR_CONNECT_EXTRA_HEADERS_JSON:-}"
 export CURSOR_AUTH_STRATEGY="${CURSOR_AUTH_STRATEGY:-local_state_direct}"
 export INFERENCE_MODE="${INFERENCE_MODE:-responses}"
+export CURSORPRO4_LICENSE_STATUS="${CURSORPRO4_LICENSE_STATUS:-activated}"
+export CURSORPRO4_BRIDGE_BASE_URL="${CURSORPRO4_BRIDGE_BASE_URL:-${CURSOR_DIRECT_BASE_URL}}"
 
 exec node "$ROOT_DIR/local-pool-service/server.mjs"

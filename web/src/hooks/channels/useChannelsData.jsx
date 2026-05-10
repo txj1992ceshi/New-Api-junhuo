@@ -1308,8 +1308,8 @@ export const useChannelsData = () => {
         key: 'upstreamUnreachable',
         filter: 'upstream_unreachable',
         count: externalPoolPageStats.upstreamUnreachable,
-        title: t('先查连接失败'),
-        description: t('当前页连接失败最多。先点“连接失败”，再检查 base_url、端口监听、池服务进程和网络连通性。'),
+        title: t('先查断连渠道'),
+        description: t('当前页真正断连的渠道最多。先点“连接失败”，再检查 base_url、端口监听、池服务进程和网络连通性；如果提示是限流或模型废弃，就不要先怀疑连通性。'),
       },
       {
         key: 'upstreamPathNotFound',

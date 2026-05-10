@@ -87,15 +87,71 @@ const getConfiguredAuthorizeUrl = (record, kind) => {
   ).trim();
 };
 
+const getPoolSummaryFromRecord = (record, kind) => {
+  if (!record) return null;
+  if (kind === 'codex_pool') return record.codex_pool_summary || null;
+  return record?.[`${kind}_pool_summary`] || null;
+};
+
+const getCursorPro4StatusHint = (summary, t) => {
+  const diagnosis = String(summary?.diagnosis || '').trim().toLowerCase();
+  switch (diagnosis) {
+    case 'sidecar_unactivated':
+      return {
+        type: 'warning',
+        text: t('CursorPro4 sidecar 未激活。请先完成 sidecar license 激活，再继续授权入池。'),
+      };
+    case 'sidecar_expired':
+      return {
+        type: 'danger',
+        text: t('CursorPro4 sidecar license 已过期。请先恢复 license，再继续授权入池。'),
+      };
+    case 'provider_not_ready':
+      return {
+        type: 'info',
+        text: t('sidecar 已激活，但当前还没有完成授权入池。先执行一次授权，再回来看账号数和可用数。'),
+      };
+    case 'bridge_unreachable':
+    case 'auth_only':
+      return {
+        type: 'warning',
+        text: t('sidecar 已授权，但当前推理桥不可用。优先检查 bridge 进程、开放路径和 inference mode。'),
+      };
+    default:
+      return null;
+  }
+};
+
 const getFriendlyPoolErrorMessage = (
   error,
   fallback,
   poolBaseUrl,
   providerLabel,
   authStrategy = '',
+  t = (v) => v,
 ) => {
+  const errorCode = String(
+    error?.response?.data?.error_code || error?.data?.error_code || '',
+  )
+    .trim()
+    .toLowerCase();
+  if (errorCode === 'sidecar_unactivated') {
+    return t('CursorPro4 sidecar 未激活，请先完成 license 激活');
+  }
+  if (errorCode === 'sidecar_expired') {
+    return t('CursorPro4 sidecar license 已过期，请先恢复 license');
+  }
   const rawMessage = String(error?.message || fallback || '').trim();
   const lower = rawMessage.toLowerCase();
+  if (lower.includes('sidecar license is not activated') || lower.includes('sidecar_unactivated')) {
+    return t('CursorPro4 sidecar 未激活，请先完成 license 激活');
+  }
+  if (lower.includes('sidecar license is expired') || lower.includes('sidecar_expired')) {
+    return t('CursorPro4 sidecar license 已过期，请先恢复 license');
+  }
+  if (lower.includes('bridge_unreachable')) {
+    return t('sidecar 已授权，但当前推理桥不可用，请先检查 bridge 进程和开放路径');
+  }
   if (
     lower.includes('connect refused') ||
     lower.includes('econnrefused') ||
@@ -143,6 +199,14 @@ const ExternalPoolAuthModalDialog = ({
     [record, providerMeta.kind],
   );
   const effectiveAuthStrategy = String(forcedAuthStrategy || authStrategy || '').trim().toLowerCase();
+  const poolSummary = useMemo(
+    () => getPoolSummaryFromRecord(record, providerMeta.kind),
+    [record, providerMeta.kind],
+  );
+  const cursorPro4StatusHint = useMemo(
+    () => getCursorPro4StatusHint(poolSummary, t),
+    [poolSummary, t],
+  );
   const isLocalStateDirect = effectiveAuthStrategy === 'local_state_direct';
   const isProviderBridge = effectiveAuthStrategy === 'provider_bridge';
   const isManualImport = effectiveAuthStrategy === 'manual_token_import';
@@ -176,6 +240,7 @@ const ExternalPoolAuthModalDialog = ({
           poolBaseUrl,
           providerMeta.label,
           effectiveAuthStrategy,
+          t,
         ),
       );
     }
@@ -230,6 +295,7 @@ const ExternalPoolAuthModalDialog = ({
         poolBaseUrl,
         providerMeta.label,
         effectiveAuthStrategy,
+        t,
       );
       setActionError(message);
       showError(message);
@@ -270,6 +336,7 @@ const ExternalPoolAuthModalDialog = ({
         poolBaseUrl,
         providerMeta.label,
         effectiveAuthStrategy,
+        t,
       );
       setActionError(message);
       showError(message);
@@ -318,6 +385,9 @@ const ExternalPoolAuthModalDialog = ({
     >
       <Space vertical spacing='tight' style={{ width: '100%' }}>
         {actionError ? <Banner type='danger' description={actionError} /> : null}
+        {cursorPro4StatusHint ? (
+          <Banner type={cursorPro4StatusHint.type} description={cursorPro4StatusHint.text} />
+        ) : null}
         <Banner
           type='info'
           description={

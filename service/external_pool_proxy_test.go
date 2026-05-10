@@ -336,7 +336,7 @@ func TestGetExternalPoolSummaryIncludesPoolState(t *testing.T) {
 	if cursorSummary.PoolState != "empty_pool" {
 		t.Fatalf("unexpected cursor pool state: %+v", cursorSummary)
 	}
-	if cursorSummary.Diagnosis != "empty_pool" || cursorSummary.Availability != "unavailable" {
+	if cursorSummary.Diagnosis != "no_active_accounts" || cursorSummary.Availability != "unavailable" {
 		t.Fatalf("unexpected cursor diagnosis: %+v", cursorSummary)
 	}
 
@@ -347,7 +347,7 @@ func TestGetExternalPoolSummaryIncludesPoolState(t *testing.T) {
 	if windsurfSummary.PoolState != "degraded" {
 		t.Fatalf("unexpected windsurf pool state: %+v", windsurfSummary)
 	}
-	if windsurfSummary.Diagnosis != "degraded" || windsurfSummary.Availability != "degraded" {
+	if windsurfSummary.Diagnosis != "no_active_accounts" || windsurfSummary.Availability != "unavailable" {
 		t.Fatalf("unexpected windsurf diagnosis: %+v", windsurfSummary)
 	}
 
@@ -489,5 +489,90 @@ func TestGetCursorPoolAuthViewSupportsManualTokenImportStrategy(t *testing.T) {
 	}
 	if view.AuthStrategy != "manual_token_import" {
 		t.Fatalf("unexpected auth strategy: %+v", view)
+	}
+}
+
+func TestParseExternalPoolStatusIncludesSidecarFields(t *testing.T) {
+	body := []byte(`{
+		"provider":"codex",
+		"license_status":"activated",
+		"authenticated":true,
+		"active":1,
+		"total":1,
+		"error":0,
+		"available_models":["gpt-5.5"],
+		"bridge":{"status":"ready","base_url":"http://127.0.0.1:8327","last_error":""}
+	}`)
+	status, err := parseExternalPoolStatus(body)
+	require.NoError(t, err)
+	require.Equal(t, "codex", status.Provider)
+	require.Equal(t, "activated", status.LicenseStatus)
+	require.Equal(t, "ready", status.BridgeStatus)
+	require.Equal(t, "http://127.0.0.1:8327", status.BridgeBaseURL)
+	require.Equal(t, []string{"gpt-5.5"}, status.Models)
+}
+
+func TestClassifyExternalPoolSummaryHandlesCursorPro4Diagnostics(t *testing.T) {
+	cases := []struct {
+		name         string
+		status       *ExternalPoolStatus
+		availability string
+		diagnosis    string
+	}{
+		{
+			name: "sidecar unactivated",
+			status: &ExternalPoolStatus{
+				LicenseStatus: "invalid",
+			},
+			availability: "unavailable",
+			diagnosis:    "sidecar_unactivated",
+		},
+		{
+			name: "sidecar expired",
+			status: &ExternalPoolStatus{
+				LicenseStatus: "expired",
+			},
+			availability: "unavailable",
+			diagnosis:    "sidecar_expired",
+		},
+		{
+			name: "bridge unreachable",
+			status: &ExternalPoolStatus{
+				LicenseStatus: "activated",
+				BridgeStatus:  "unreachable",
+			},
+			availability: "unavailable",
+			diagnosis:    "bridge_unreachable",
+		},
+		{
+			name: "no active accounts",
+			status: &ExternalPoolStatus{
+				LicenseStatus: "activated",
+				Authenticated: true,
+				Active:        0,
+				Total:         2,
+			},
+			availability: "unavailable",
+			diagnosis:    "no_active_accounts",
+		},
+		{
+			name: "provider not ready",
+			status: &ExternalPoolStatus{
+				LicenseStatus: "activated",
+				Authenticated: false,
+				Active:        0,
+				Total:         0,
+			},
+			availability: "degraded",
+			diagnosis:    "provider_not_ready",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyExternalPoolSummary(tc.status, nil, nil)
+			require.Equal(t, tc.availability, got.Availability)
+			require.Equal(t, tc.diagnosis, got.Diagnosis)
+		})
 	}
 }

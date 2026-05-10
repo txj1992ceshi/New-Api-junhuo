@@ -264,7 +264,16 @@ const renderMultiKeyStatus = (status, keySize, record, t, enabledKeySize = keySi
         break;
       case 'upstream_error':
         poolStateColor = 'red';
-        poolStateLabel = t('断连');
+        poolStateLabel =
+          diagnosis === 'upstream_unreachable'
+            ? t('断连')
+            : diagnosis === 'rate_limited'
+              ? t('限流')
+              : diagnosis === 'upstream_path_not_found'
+                ? t('路径错误')
+                : diagnosis === 'auth_rejected'
+                  ? t('认证失败')
+                  : t('上游异常');
         break;
       default:
         break;
@@ -280,6 +289,26 @@ const renderMultiKeyStatus = (status, keySize, record, t, enabledKeySize = keySi
       case 'auth_only':
         diagnosisColor = 'yellow';
         diagnosisLabel = t('已认证，不可推理');
+        break;
+      case 'sidecar_unactivated':
+        diagnosisColor = 'orange';
+        diagnosisLabel = t('Sidecar 未激活');
+        break;
+      case 'sidecar_expired':
+        diagnosisColor = 'red';
+        diagnosisLabel = t('Sidecar 已过期');
+        break;
+      case 'bridge_unreachable':
+        diagnosisColor = 'red';
+        diagnosisLabel = t('Bridge 不可达');
+        break;
+      case 'no_active_accounts':
+        diagnosisColor = 'orange';
+        diagnosisLabel = t('无可用账号');
+        break;
+      case 'provider_not_ready':
+        diagnosisColor = 'yellow';
+        diagnosisLabel = t('待授权');
         break;
       case 'unprobed':
         diagnosisColor = 'grey';

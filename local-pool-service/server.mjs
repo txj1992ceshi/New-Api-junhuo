@@ -25,8 +25,12 @@ const port = Number(
         ? 3501
         : provider === 'codex'
           ? 3601
-          : 3003),
+      : 3003),
 );
+const listenHost = String(
+  process.env.POOL_LISTEN_HOST || process.env.LISTEN_HOST || '127.0.0.1',
+)
+  .trim() || '127.0.0.1';
 const apiKey = String(process.env.API_KEY || `demo-${provider}-key`).trim();
 const dashboardPassword = String(process.env.DASHBOARD_PASSWORD || `demo-${provider}-dashboard`).trim();
 const dataDir = path.resolve(
@@ -95,6 +99,15 @@ const windsurfAuthStrategy = String(process.env.WINDSURF_AUTH_STRATEGY || 'local
 const inferenceMode = String(process.env.INFERENCE_MODE || 'responses')
   .trim()
   .toLowerCase();
+const cursorPro4LicenseStatus = String(process.env.CURSORPRO4_LICENSE_STATUS || 'activated')
+  .trim()
+  .toLowerCase();
+const cursorPro4BridgeBaseUrl = String(
+  process.env.CURSORPRO4_BRIDGE_BASE_URL ||
+    (provider === 'codex' ? 'http://127.0.0.1:8327' : cursorDirectBaseUrl || ''),
+)
+  .trim()
+  .replace(/\/+$/, '');
 
 const defaultModelMap = {
   cursor: ['default', 'gpt-4.1-mini', 'gpt-4o-mini', 'gpt-5-mini'],
@@ -351,6 +364,115 @@ function defaultModels() {
       .filter(Boolean);
   }
   return defaultModelMap[provider] || [];
+}
+
+function resolveLicenseStatus() {
+  switch (cursorPro4LicenseStatus) {
+    case 'activated':
+    case 'expired':
+    case 'invalid':
+    case 'unavailable':
+      return cursorPro4LicenseStatus;
+    default:
+      return 'unavailable';
+  }
+}
+
+async function probeBridgeHealth() {
+  const licenseStatus = resolveLicenseStatus();
+  if (licenseStatus !== 'activated') {
+    return {
+      status: licenseStatus === 'expired' ? 'expired' : 'unavailable',
+      base_url: cursorPro4BridgeBaseUrl || null,
+      last_error:
+        licenseStatus === 'expired' ? 'cursorpro4_license_expired' : 'cursorpro4_license_unavailable',
+    };
+  }
+  if (provider === 'kiro') {
+    return {
+      status: 'ready',
+      base_url: 'kiro://local-sidecar',
+      last_error: '',
+    };
+  }
+  if (provider === 'windsurf') {
+    return {
+      status: 'unavailable',
+      base_url: cursorPro4BridgeBaseUrl || null,
+      last_error: 'provider_bridge_not_enabled',
+    };
+  }
+  if (provider === 'cursor' && cursorProviderMode === 'cli') {
+    return {
+      status: 'ready',
+      base_url: 'cursor://cli',
+      last_error: '',
+    };
+  }
+  if (provider === 'cursor' && cursorProviderMode === 'direct') {
+    return {
+      status: 'ready',
+      base_url: cursorDirectBaseUrl || 'cursor://direct',
+      last_error: '',
+    };
+  }
+  if (!cursorPro4BridgeBaseUrl) {
+    return {
+      status: 'unavailable',
+      base_url: null,
+      last_error: 'bridge_base_url_not_configured',
+    };
+  }
+  try {
+    const response = await fetch(`${cursorPro4BridgeBaseUrl}/health`);
+    const raw = await response.text();
+    const payload = safeJsonParse(raw, null);
+    if (!response.ok) {
+      return {
+        status: 'unreachable',
+        base_url: cursorPro4BridgeBaseUrl,
+        last_error:
+          payload?.error?.message ||
+          payload?.message ||
+          `bridge health failed: status=${response.status}`,
+      };
+    }
+    return {
+      status: 'ready',
+      base_url: cursorPro4BridgeBaseUrl,
+      last_error: '',
+      metadata: payload && typeof payload === 'object' ? payload : undefined,
+    };
+  } catch (error) {
+    return {
+      status: 'unreachable',
+      base_url: cursorPro4BridgeBaseUrl,
+      last_error: String(error.message || error),
+    };
+  }
+}
+
+function isBridgeHealthy(bridge) {
+  return String(bridge?.status || '').trim().toLowerCase() === 'ready';
+}
+
+function providerRequiresBridge() {
+  return provider !== 'windsurf';
+}
+
+function finalizeVerification(verification, bridge) {
+  const next = {
+    ok: Boolean(verification?.ok),
+    status: verification?.status || 'degraded',
+    status_reason: verification?.status_reason || '',
+    ...verification,
+  };
+  if (providerRequiresBridge() && !isBridgeHealthy(bridge)) {
+    next.ok = false;
+    next.status = 'degraded';
+    next.status_reason = 'bridge_unreachable';
+  }
+  return next;
 }
 
 function readCursorLocalAccount() {
@@ -827,11 +949,14 @@ function statusView(accounts) {
   const active = accounts.filter((item) => item.status === 'active').length;
   const models = [...new Set(accounts.flatMap((item) => item.available_models || []))];
   return {
+    provider,
+    license_status: resolveLicenseStatus(),
     authenticated: active > 0,
     total: accounts.length,
     active,
     error: accounts.filter((item) => item.status !== 'active').length,
     models,
+    available_models: models,
   };
 }
 
@@ -891,14 +1016,44 @@ function buildAuthStartPayload(strategy) {
           ? 'Codex'
           : 'Kiro';
   const isLocalStateDirect = strategy === 'local_state_direct';
+  const licenseStatus = resolveLicenseStatus();
+  const taskId = makeId(`${provider}-auth`);
+  const authorizeUrl = '';
+  if (licenseStatus !== 'activated') {
+    const errorCode =
+      licenseStatus === 'expired' ? 'sidecar_expired' : 'sidecar_unactivated';
+    return {
+      success: false,
+      message:
+        licenseStatus === 'expired'
+          ? 'CursorPro4 sidecar license is expired'
+          : 'CursorPro4 sidecar license is not activated',
+      error_code: errorCode,
+      recoverable: true,
+      data: {
+        task_id: taskId,
+        provider,
+        auth_strategy: strategy,
+        license_status: licenseStatus,
+        next_action: 'activate_sidecar',
+        authorize_url: authorizeUrl,
+        authorize_hint: '请先在 CursorPro4 sidecar 完成 license 激活，再继续授权入池。',
+        required_fields: [],
+      },
+    };
+  }
   if (strategy === 'provider_bridge') {
     return {
       success: true,
       message: 'provider bridge is ready',
       recoverable: true,
       data: {
+        task_id: taskId,
+        provider,
+        license_status: licenseStatus,
         auth_strategy: strategy,
         next_action: 'complete_auth',
+        authorize_url: authorizeUrl,
         authorize_hint: `读取本机 ${providerLabel} 当前 provider 配置并导入当前渠道池。`,
         required_fields: [],
       },
@@ -910,8 +1065,12 @@ function buildAuthStartPayload(strategy) {
       message: 'oauth callback adapter is ready',
       recoverable: true,
       data: {
+        task_id: taskId,
+        provider,
+        license_status: licenseStatus,
         auth_strategy: strategy,
         next_action: 'open_authorize_then_submit_callback',
+        authorize_url: authorizeUrl,
         authorize_hint:
           '完成 Cursor 授权后，将浏览器最终跳转的完整 URL 或上游返回的 JSON 结果粘贴回来，适配器会尝试解析并导入账号池。',
         required_fields: ['callback_url_or_json'],
@@ -924,8 +1083,12 @@ function buildAuthStartPayload(strategy) {
       message: 'manual token import is ready',
       recoverable: true,
       data: {
+        task_id: taskId,
+        provider,
+        license_status: licenseStatus,
         auth_strategy: strategy,
         next_action: 'submit_manual_token_import',
+        authorize_url: authorizeUrl,
         authorize_hint: '粘贴 JSON 凭据并导入账号池。',
         required_fields: ['email', 'access_token'],
       },
@@ -936,8 +1099,12 @@ function buildAuthStartPayload(strategy) {
     message: `local ${provider} state scan is ready`,
     recoverable: true,
     data: {
+      task_id: taskId,
+      provider,
+      license_status: licenseStatus,
       auth_strategy: strategy,
       next_action: 'complete_auth',
+      authorize_url: authorizeUrl,
       authorize_hint: isLocalStateDirect
         ? `读取本机 ${providerLabel} 登录态并导入当前渠道池。`
         : `准备导入 ${providerLabel} 手工凭据。`,
@@ -962,6 +1129,33 @@ function localAuthProviderLabel() {
 
 async function completeProviderAuth(payload = {}) {
   const authStrategy = resolveProviderAuthStrategy(payload);
+  const licenseStatus = resolveLicenseStatus();
+  const bridge = await probeBridgeHealth();
+  if (licenseStatus !== 'activated') {
+    const errorCode = licenseStatus === 'expired' ? 'sidecar_expired' : 'sidecar_unactivated';
+    return {
+      success: false,
+      message:
+        licenseStatus === 'expired'
+          ? 'CursorPro4 sidecar license is expired'
+          : 'CursorPro4 sidecar license is not activated',
+      error_code: errorCode,
+      recoverable: true,
+      data: {
+        provider,
+        license_status: licenseStatus,
+        auth_strategy: authStrategy,
+        bridge,
+        imported: false,
+        verification: {
+          ok: false,
+          status: 'degraded',
+          status_reason: errorCode,
+        },
+        status_reason: errorCode,
+      },
+    };
+  }
   if (authStrategy === 'oauth_callback') {
     let imported;
     try {
@@ -979,10 +1173,13 @@ async function completeProviderAuth(payload = {}) {
           'oauth_callback adapter failed to parse callback payload',
         recoverable: true,
         data: {
+          provider,
+          license_status: licenseStatus,
           auth_strategy: authStrategy,
           account_source: 'cursor_oauth_callback_adapter',
           imported: false,
           active_count: statusView(mergeAccounts()).active,
+          bridge,
           verification: {
             ok: false,
             status: 'degraded',
@@ -996,18 +1193,21 @@ async function completeProviderAuth(payload = {}) {
     next.push(imported);
     savePersistedAccounts(next);
     const accounts = mergeAccounts();
-    const verification = await verifyPoolAccounts(accounts);
+    const verification = finalizeVerification(await verifyPoolAccounts(accounts), bridge);
     const activeCount = statusView(accounts).active;
     return {
       success: verification.ok,
       message: verification.ok ? 'OAuth 回调结果已导入并通过最小验池' : 'OAuth 回调结果已导入，但最小验池失败',
       recoverable: !verification.ok,
       data: {
+        provider,
+        license_status: licenseStatus,
         auth_strategy: authStrategy,
         account_source: 'cursor_oauth_callback_adapter',
         account_email: imported.email,
         imported: true,
         active_count: activeCount,
+        bridge,
         verification,
         status_reason: verification.status_reason || '',
       },
@@ -1023,10 +1223,13 @@ async function completeProviderAuth(payload = {}) {
         message: String(error.message || error),
         recoverable: true,
         data: {
+          provider,
+          license_status: licenseStatus,
           auth_strategy: authStrategy,
           account_source: 'manual_token_import',
           imported: false,
           active_count: statusView(mergeAccounts()).active,
+          bridge,
           verification: {
             ok: false,
             status: 'degraded',
@@ -1039,18 +1242,21 @@ async function completeProviderAuth(payload = {}) {
     next.push(imported);
     savePersistedAccounts(next);
     const accounts = mergeAccounts();
-    const verification = await verifyPoolAccounts(accounts);
+    const verification = finalizeVerification(await verifyPoolAccounts(accounts), bridge);
     const activeCount = statusView(accounts).active;
     return {
       success: verification.ok,
       message: verification.ok ? '账号已导入并通过最小验池' : '账号已导入，但最小验池失败',
       recoverable: !verification.ok,
       data: {
+        provider,
+        license_status: licenseStatus,
         auth_strategy: authStrategy,
         account_source: imported.source,
         account_email: imported.email,
         imported: true,
         active_count: activeCount,
+        bridge,
         verification,
         status_reason: verification.status_reason || '',
       },
@@ -1077,11 +1283,14 @@ async function completeProviderAuth(payload = {}) {
           : `未发现本机 ${providerLabel} 登录态，请先在客户端完成登录`,
       recoverable: true,
       data: {
+        provider,
+        license_status: licenseStatus,
         auth_strategy: authStrategy,
         account_source: sourceName,
         account_email: '',
         imported: false,
         active_count: statusView(mergeAccounts()).active,
+        bridge,
         verification: {
           ok: false,
           status: 'degraded',
@@ -1092,7 +1301,7 @@ async function completeProviderAuth(payload = {}) {
     };
   }
   const accounts = mergeAccounts();
-  const verification = await verifyPoolAccounts(accounts);
+  const verification = finalizeVerification(await verifyPoolAccounts(accounts), bridge);
   const activeCount = statusView(accounts).active;
   const providerLabel = localAuthProviderLabel();
   return {
@@ -1106,11 +1315,14 @@ async function completeProviderAuth(payload = {}) {
         : `已读取本机 ${providerLabel} 登录态，但最小验池失败`,
     recoverable: !verification.ok,
     data: {
+      provider,
+      license_status: licenseStatus,
       auth_strategy: authStrategy,
       account_source: localAccount.source,
       account_email: localAccount.email,
       imported: false,
       active_count: activeCount,
+      bridge,
       verification,
       status_reason: verification.status_reason || '',
     },
@@ -1348,26 +1560,42 @@ function findActiveAccount(accounts) {
 async function fetchKiroModels(account) {
   const region = account?.region || 'us-east-1';
   const profileArn = account?.profile_arn;
+  const fallbackModels = Array.isArray(account?.available_models) && account.available_models.length > 0
+    ? [...new Set(account.available_models.map((item) => String(item || '').trim()).filter(Boolean))]
+    : defaultModels();
   if (!account?.access_token || !profileArn) {
-    return defaultModels();
+    return fallbackModels;
   }
   const url = `https://q.${region}.amazonaws.com/ListAvailableModels?origin=AI_EDITOR&profileArn=${encodeURIComponent(profileArn)}`;
-  const raw = execFileSync(
-    'curl',
-    ['-sS', '-H', `Authorization: Bearer ${account.access_token}`, url],
-    {
-      encoding: 'utf8',
-      timeout: 20_000,
-    },
-  ).trim();
-  const payload = safeJsonParse(raw, null);
-  if (!payload || typeof payload !== 'object') {
-    throw new Error('Kiro models upstream returned invalid JSON');
+  try {
+    const raw = execFileSync(
+      'curl',
+      [
+        '-sS',
+        '--connect-timeout',
+        '2',
+        '--max-time',
+        '4',
+        '-H',
+        `Authorization: Bearer ${account.access_token}`,
+        url,
+      ],
+      {
+        encoding: 'utf8',
+        timeout: 5_000,
+      },
+    ).trim();
+    const payload = safeJsonParse(raw, null);
+    if (!payload || typeof payload !== 'object') {
+      return fallbackModels;
+    }
+    const models = Array.isArray(payload?.models)
+      ? payload.models.map((item) => String(item?.modelId || '').trim()).filter(Boolean)
+      : [];
+    return models.length > 0 ? [...new Set(models)] : fallbackModels;
+  } catch {
+    return fallbackModels;
   }
-  const models = Array.isArray(payload?.models)
-    ? payload.models.map((item) => String(item?.modelId || '').trim()).filter(Boolean)
-    : [];
-  return models.length > 0 ? [...new Set(models)] : defaultModels();
 }
 
 async function invokeKiroResponse(accounts, payload) {
@@ -2156,28 +2384,43 @@ async function requestCursorConnectStreamingUpstream(account, pathName, payload)
 
 async function fetchCursorDirectModels(accounts) {
   const account = findActiveAccount(accounts);
-  if (cursorDirectProtocol === 'connect') {
-    const connectPath = ensureCursorConnectPath(
-      effectiveCursorConnectModelsPath,
-      'CURSOR_CONNECT_MODELS_PATH',
-    );
-    const payload = await requestCursorConnectUpstream(account, connectPath, {
-      includeLongContextModels: false,
-      excludeMaxNamedModels: false,
-    });
-    const models = stringListByPaths(payload, cursorConnectModelPaths);
-    return models.length > 0 ? models : defaultModels();
+  const fallbackModels =
+    Array.isArray(account?.available_models) && account.available_models.length > 0
+      ? [...new Set(account.available_models.map((item) => String(item || '').trim()).filter(Boolean))]
+      : defaultModels();
+  if (!account) {
+    return fallbackModels;
   }
-  const payload = await requestCursorDirectUpstream(
-    account,
-    'GET',
-    cursorDirectModelsPath,
-    null,
-  );
-  const models = Array.isArray(payload?.data)
-    ? payload.data.map((item) => String(item?.id || '').trim()).filter(Boolean)
-    : [];
-  return models.length > 0 ? [...new Set(models)] : defaultModels();
+  if (cursorDirectProtocol === 'connect') {
+    try {
+      const connectPath = ensureCursorConnectPath(
+        effectiveCursorConnectModelsPath,
+        'CURSOR_CONNECT_MODELS_PATH',
+      );
+      const payload = await requestCursorConnectUpstream(account, connectPath, {
+        includeLongContextModels: false,
+        excludeMaxNamedModels: false,
+      });
+      const models = stringListByPaths(payload, cursorConnectModelPaths);
+      return models.length > 0 ? models : fallbackModels;
+    } catch {
+      return fallbackModels;
+    }
+  }
+  try {
+    const payload = await requestCursorDirectUpstream(
+      account,
+      'GET',
+      cursorDirectModelsPath,
+      null,
+    );
+    const models = Array.isArray(payload?.data)
+      ? payload.data.map((item) => String(item?.id || '').trim()).filter(Boolean)
+      : [];
+    return models.length > 0 ? [...new Set(models)] : fallbackModels;
+  } catch {
+    return fallbackModels;
+  }
 }
 
 function invokeCursorCliResponse(payload) {
@@ -2416,8 +2659,11 @@ function renderDashboard(accounts) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://127.0.0.1:${port}`);
+  const baseHost = listenHost.includes(':') ? `[${listenHost}]` : listenHost;
+  const url = new URL(req.url, `http://${baseHost}:${port}`);
   const accounts = mergeAccounts();
+  const bridge = await probeBridgeHealth();
+  const currentStatus = statusView(accounts);
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
@@ -2429,8 +2675,18 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  if (url.pathname === '/healthz') {
-    json(res, 200, { ok: true, provider, port });
+  if (url.pathname === '/health' || url.pathname === '/healthz') {
+    json(res, 200, {
+      ok: true,
+      status: 'ok',
+      provider,
+      port,
+      license_status: currentStatus.license_status,
+      authenticated: currentStatus.authenticated,
+      accounts: currentStatus.total,
+      available: currentStatus.active,
+      bridge,
+    });
     return;
   }
 
@@ -2477,29 +2733,41 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === '/auth/status' && req.method === 'GET') {
     if (!ensureApiAuth(req, res)) return;
-    json(res, 200, statusView(accounts));
+    json(res, 200, {
+      ...currentStatus,
+      bridge,
+      fetched_at: nowIso(),
+    });
     return;
   }
 
   if (url.pathname === '/auth/accounts' && req.method === 'GET') {
     if (!ensureApiAuth(req, res)) return;
     json(res, 200, {
+      provider,
+      license_status: currentStatus.license_status,
+      bridge,
       accounts: accounts.map((item) => ({
         id: item.id,
         email: item.email,
+        display_name: item.display_name || item.email,
         method: item.method,
         status: item.status,
-        addedAt: item.added_at,
+        status_reason: item.status_reason || '',
+        added_at: item.added_at,
         tier: item.tier,
-        availableModels: item.available_models || [],
-        source: item.source,
-        sourcePath: item.source_path,
-        expiresAt: item.expires_at || null,
-        lastRefresh: item.last_refresh || null,
-        lastSuccessAt: item.last_success_at || null,
-        lastFailureAt: item.last_failure_at || null,
-        failureCount: Number(item.failure_count || 0),
-        statusReason: item.status_reason || '',
+        available_models: item.available_models || [],
+        last_probed: item.last_success_at ? Date.parse(item.last_success_at) || 0 : 0,
+        rate_limited: false,
+        metadata: {
+          source: item.source,
+          source_path: item.source_path,
+          expires_at: item.expires_at || null,
+          last_refresh: item.last_refresh || null,
+          last_success_at: item.last_success_at || null,
+          last_failure_at: item.last_failure_at || null,
+          failure_count: Number(item.failure_count || 0),
+        },
       })),
     });
     return;
@@ -2541,13 +2809,13 @@ const server = http.createServer(async (req, res) => {
       const active = findActiveAccount(accounts);
       const models =
         provider === 'kiro'
-          ? (active ? await fetchKiroModels(active) : [])
+          ? (active ? active.available_models || defaultModels() : [])
           : provider === 'codex'
             ? (active ? await fetchCodexModels(accounts) : [])
           : provider === 'windsurf'
             ? (active ? active.available_models || defaultModels() : [])
           : cursorProviderMode === 'direct'
-            ? (active ? await fetchCursorDirectModels(accounts) : [])
+            ? (active ? active.available_models || defaultModels() : [])
             : readCursorAgentModels();
       json(res, 200, {
         object: 'list',
@@ -2659,12 +2927,13 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
-server.listen(port, '127.0.0.1', () => {
+server.listen(port, listenHost, () => {
   ensureDir();
   console.log(
     JSON.stringify({
       provider,
       port,
+      listenHost,
       dataFile,
       snapshotPath: snapshotPath || null,
       sourcePaths: getSourcePaths(),
