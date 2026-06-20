@@ -126,7 +126,7 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 }
 
 func (a *Adaptor) ConvertImageRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.ImageRequest) (any, error) {
-	return nil, errors.New("antigravity channel: image endpoints not supported")
+	return convertAntigravityImageRequest(c, a, info, request)
 }
 
 func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, request dto.OpenAIResponsesRequest) (any, error) {
@@ -210,6 +210,8 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 	}
 	if info != nil {
 		switch info.RelayMode {
+		case relayconstant.RelayModeImagesGenerations, relayconstant.RelayModeImagesEdits:
+			return antigravityImageHandler(c, info, unwrapped)
 		case relayconstant.RelayModeResponses:
 			if info.IsStream {
 				return antigravityResponsesStreamHandler(c, info, unwrapped)
