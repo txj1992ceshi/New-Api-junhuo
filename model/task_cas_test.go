@@ -23,6 +23,10 @@ func TestMain(m *testing.M) {
 	LOG_DB = db
 
 	common.UsingSQLite = true
+	commonKeyCol = "`key`"
+	commonGroupCol = "`group`"
+	commonTrueVal = "1"
+	commonFalseVal = "0"
 	common.RedisEnabled = false
 	common.BatchUpdateEnabled = false
 	common.LogConsumeEnabled = true
@@ -43,6 +47,9 @@ func TestMain(m *testing.M) {
 		&SubscriptionPlan{},
 		&SubscriptionOrder{},
 		&UserSubscription{},
+		&JunhuoLinkUserMapping{},
+		&JunhuoLinkDeviceKey{},
+		&JunhuoLinkUsageReceipt{},
 	); err != nil {
 		panic("failed to migrate: " + err.Error())
 	}
@@ -62,6 +69,9 @@ func truncateTables(t *testing.T) {
 		DB.Exec("DELETE FROM subscription_orders")
 		DB.Exec("DELETE FROM subscription_plans")
 		DB.Exec("DELETE FROM user_subscriptions")
+		DB.Exec("DELETE FROM junhuo_link_usage_receipts")
+		DB.Exec("DELETE FROM junhuo_link_device_keys")
+		DB.Exec("DELETE FROM junhuo_link_user_mappings")
 	})
 }
 
